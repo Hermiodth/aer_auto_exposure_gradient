@@ -1,61 +1,51 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.8)
 project(aer_auto_exposure_gradient)
 
+# if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+#   add_compile_options(-Wall -Wextra -Wpedantic)
+# endif()
 
+set(CMAKE_CXX_FLAGS "-std=c++23 ${CMAKE_CXX_FLAGS}")
 
-find_package(catkin REQUIRED COMPONENTS
+find_package(ament_cmake REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
+
+set(DEPENDENCIES
+  rclcpp
   cv_bridge
   image_transport
-  message_generation
-  message_runtime
-  roscpp
   sensor_msgs
   std_msgs
 )
-find_package(cmake_modules)
 
-find_package(OpenCV REQUIRED)
-find_package(Eigen3)
-
-
-
-
-
-
-
-
-catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES aer_auto_exposure_gradient
-  CATKIN_DEPENDS cv_bridge image_transport message_generation message_runtime roscpp sensor_msgs std_msgs
-#  DEPENDS system_lib
-)
-
+foreach(DEP IN LISTS DEPENDENCIES)
+  find_package(${DEP} REQUIRED)
+endforeach()
 
 include_directories(
- include
-  ${catkin_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${Eigen3_INCLUDE_DIRS}
+  include
 )
 
-add_library(${PROJECT_NAME}
-   
-  
- src/auto_exp.cpp
+# include_directories(
+#  include
+#   ${catkin_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${Eigen3_INCLUDE_DIRS}
+# )
 
- 
-    
-)
-target_link_libraries(${PROJECT_NAME}
-    ${catkin_LIBRARIES} ${OpenCV_LIBRARIES}
-    
-    )
-
-
-
+add_library(${PROJECT_NAME} src/auto_exp.cpp)
+target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBRARIES})
+ament_target_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
+install(TARGETS ${PROJECT_NAME} DESTINATION lib/${PROJECT_NAME})
 
 add_executable(exp_node1 src/exp_node1.cpp)
 target_link_libraries(exp_node1  ${PROJECT_NAME})
-add_dependencies(exp_node1 ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
-set(CMAKE_CXX_FLAGS "-std=c++11 ${CMAKE_CXX_FLAGS}")
+#add_dependencies(exp_node1 ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
+ament_target_dependencies(exp_node1 ${DEPENDENCIES})
+install(TARGETS exp_node1 DESTINATION lib/${PROJECT_NAME})
 
+install(DIRECTORY include/${PROJECT_NAME}/
+        DESTINATION include/${PROJECT_NAME})
 
+ament_export_dependencies(${DEPENDENCIES})
+ament_export_include_directories(include)
+ament_package()

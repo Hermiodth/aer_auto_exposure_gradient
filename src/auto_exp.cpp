@@ -13,22 +13,22 @@ namespace exp_node
 	cv::Mat lookUpTable_19(1, 256, CV_8U);
 	cv::Mat lookUpTable_metric(1, 256, CV_8U);
 
-	ExpNode::ExpNode (const ros::NodeHandle & nh, const ros::NodeHandle & pnh):nh_ (nh),
-    it_ (nh)
+	ExpNode::ExpNode () : rclcpp::Node("exp_node"), it_ (shared_from_this())
     {
 
-    	std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/image_topic", image_topic)<<"\n";
-        std::cout <<"the value of image topic is : "<< image_topic<<"\n";
-        std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
-        std::cout <<"the value of service call val is : "<< service_call<<"\n";
-        std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/exp_param_call", exp_param_call)<<"\n";
-        std::cout <<"the value of exp param is : "<< exp_param_call<<"\n";
-        std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/gain_param_call", gain_param_call)<<"\n";
-        std::cout <<"the value of gain param is : "<< gain_param_call<<"\n";
-        std::cout <<"the  kp given in launch file? :"<< nh.getParam("/kp", kp)<<"\n";
-        std::cout <<"the value of kp is : "<< kp<<"\n";
+    	// std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/image_topic", image_topic)<<"\n";
+        // std::cout <<"the value of image topic is : "<< image_topic<<"\n";
+        // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
+        // std::cout <<"the value of service call val is : "<< service_call<<"\n";
+        // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/exp_param_call", exp_param_call)<<"\n";
+        // std::cout <<"the value of exp param is : "<< exp_param_call<<"\n";
+        // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/gain_param_call", gain_param_call)<<"\n";
+        // std::cout <<"the value of gain param is : "<< gain_param_call<<"\n";
+        // std::cout <<"the  kp given in launch file? :"<< nh.getParam("/kp", kp)<<"\n";
+        // std::cout <<"the value of kp is : "<< kp<<"\n";
         
-        cv::namedWindow("view", CV_WINDOW_NORMAL); // comment in implement
+        //cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
+		cv::namedWindow("view"); // comment in implement
 
     	generate_LUT();
     	sub_camera_ = it_.subscribe(image_topic, 1,&ExpNode::CameraCb, this);
@@ -37,7 +37,7 @@ namespace exp_node
 	
 
 
-	void ExpNode::CameraCb (const sensor_msgs::ImageConstPtr& msg)
+	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
 	{ 
 
@@ -152,8 +152,8 @@ namespace exp_node
 				//ros::param::get("/blackfly/spinnaker_camera_nodelet/exposure_time", shutter_cur); // get the current shutter
 				//ros::param::get("/blackfly/spinnaker_camera_nodelet/gain", gain_cur); // get the current gain
 
-				ros::param::get(exp_param_call, shutter_cur); // get the current shutter
-				ros::param::get(gain_param_call, gain_cur); // get the current gain
+				// ros::param::get(exp_param_call, shutter_cur); // get the current shutter
+				// ros::param::get(gain_param_call, gain_cur); // get the current gain
 			
 				
 				shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
@@ -215,12 +215,12 @@ namespace exp_node
                 ///////////////////////////////////////////////////////////////////
 
 				
-                ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
+                //ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
 
 			}
 			catch (cv_bridge::Exception& e)
 			{
-				ROS_ERROR("Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
+				RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
 			}
 		}
 		else // keeping the if-else statement here is because this makes easier to add delay
@@ -310,66 +310,66 @@ namespace exp_node
 	} 
 
 
-    void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings
-    {
-        dynamic_reconfigure::ReconfigureRequest srv_req;
-        dynamic_reconfigure::ReconfigureResponse srv_resp;
-        dynamic_reconfigure::BoolParameter acq_fps_bool; //enable "acquisition_frame_rate_enable"
-        dynamic_reconfigure::StrParameter gain_auto_str,exp_auto_str,wb_auto_str; // Auto gain, white balance and exposure off
-        dynamic_reconfigure::DoubleParameter acq_fps_double, exp_time_double, gain_double, exp_auto_upper_double;
-        dynamic_reconfigure::Config conf;
+    // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings
+    // {
+    //     dynamic_reconfigure::ReconfigureRequest srv_req;
+    //     dynamic_reconfigure::ReconfigureResponse srv_resp;
+    //     dynamic_reconfigure::BoolParameter acq_fps_bool; //enable "acquisition_frame_rate_enable"
+    //     dynamic_reconfigure::StrParameter gain_auto_str,exp_auto_str,wb_auto_str; // Auto gain, white balance and exposure off
+    //     dynamic_reconfigure::DoubleParameter acq_fps_double, exp_time_double, gain_double, exp_auto_upper_double;
+    //     dynamic_reconfigure::Config conf;
 
-	// set constant frame rate
-        acq_fps_bool.name = "acquisition_frame_rate_enable"; // maximum frame rate: 80 fps
-        acq_fps_bool.value = true;
-        conf.bools.push_back(acq_fps_bool);
+	// // set constant frame rate
+    //     acq_fps_bool.name = "acquisition_frame_rate_enable"; // maximum frame rate: 80 fps
+    //     acq_fps_bool.value = true;
+    //     conf.bools.push_back(acq_fps_bool);
 
-	// trun off built-in auto exposure
-        exp_auto_str.name = "exposure_auto"; // shut off auto exposure
-        exp_auto_str.value = "Off";
-        conf.strs.push_back(exp_auto_str);
+	// // trun off built-in auto exposure
+    //     exp_auto_str.name = "exposure_auto"; // shut off auto exposure
+    //     exp_auto_str.value = "Off";
+    //     conf.strs.push_back(exp_auto_str);
 
-	// turn off auto gain
-        gain_auto_str.name = "auto_gain"; // shut off auto gain adjustment
-        gain_auto_str.value = "Off";
-        conf.strs.push_back(gain_auto_str);
+	// // turn off auto gain
+    //     gain_auto_str.name = "auto_gain"; // shut off auto gain adjustment
+    //     gain_auto_str.value = "Off";
+    //     conf.strs.push_back(gain_auto_str);
 
-	/*
-        wb_auto_str.name = "auto_white_balance"; // shut off auto white balance
-        wb_auto_str.value = "Off";
-        conf.strs.push_back(wb_auto_str);
-	*/
+	// /*
+    //     wb_auto_str.name = "auto_white_balance"; // shut off auto white balance
+    //     wb_auto_str.value = "Off";
+    //     conf.strs.push_back(wb_auto_str);
+	// */
 
-	// Set required frame rate
-        acq_fps_double.name = "acquisition_frame_rate"; // maximum frame rate: 80 fps
-        acq_fps_double.value = frame_rate_req; //change frame rate as needed
-        conf.doubles.push_back(acq_fps_double);
+	// // Set required frame rate
+    //     acq_fps_double.name = "acquisition_frame_rate"; // maximum frame rate: 80 fps
+    //     acq_fps_double.value = frame_rate_req; //change frame rate as needed
+    //     conf.doubles.push_back(acq_fps_double);
 
-	// Update exposure time
-        exp_time_double.name = "exposure_time"; // Maximum range: 0 to 32754 [unit: micro-seconds]
-        exp_time_double.value = shutter_new; ///////////////////////////// using function return value
-        conf.doubles.push_back(exp_time_double);
+	// // Update exposure time
+    //     exp_time_double.name = "exposure_time"; // Maximum range: 0 to 32754 [unit: micro-seconds]
+    //     exp_time_double.value = shutter_new; ///////////////////////////// using function return value
+    //     conf.doubles.push_back(exp_time_double);
 
-	// Update gain
-        gain_double.name = "gain"; // Maximum range: -10 to 30
-        gain_double.value = gain_new; ///////////////////////////////////// using function return value
-        conf.doubles.push_back(gain_double);
+	// // Update gain
+    //     gain_double.name = "gain"; // Maximum range: -10 to 30
+    //     gain_double.value = gain_new; ///////////////////////////////////// using function return value
+    //     conf.doubles.push_back(gain_double);
 
-	// calculate and set highest possible exposure time (the camera has a limit of 32754 [unit: microsecond])
-        exp_auto_upper_double.name = "auto_exposure_time_upper_limit";
-	if ((1.0/frame_rate_req)*1000000.0 > 32754.0){        
-		exp_auto_upper_double.value = 32754.0;
-	}
-	else{
-		exp_auto_upper_double.value = 1000000.0/frame_rate_req;
-	}
-        conf.doubles.push_back(exp_auto_upper_double);
+	// // calculate and set highest possible exposure time (the camera has a limit of 32754 [unit: microsecond])
+    //     exp_auto_upper_double.name = "auto_exposure_time_upper_limit";
+	// if ((1.0/frame_rate_req)*1000000.0 > 32754.0){        
+	// 	exp_auto_upper_double.value = 32754.0;
+	// }
+	// else{
+	// 	exp_auto_upper_double.value = 1000000.0/frame_rate_req;
+	// }
+    //     conf.doubles.push_back(exp_auto_upper_double);
 
-        srv_req.config = conf;
+    //     srv_req.config = conf;
 
-        //ros::service::call("/blackfly/spinnaker_camera_nodelet/set_parameters",srv_req, srv_resp);
-	ros::service::call(service_call,srv_req, srv_resp);
-    }
+    //     //ros::service::call("/blackfly/spinnaker_camera_nodelet/set_parameters",srv_req, srv_resp);
+	// ros::service::call(service_call,srv_req, srv_resp);
+    // }
 	
 
 	void ExpNode::generate_LUT (){

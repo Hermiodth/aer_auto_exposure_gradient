@@ -1,16 +1,9 @@
 #include "aer_auto_exposure_gradient/auto_exp.h"
 
-
-int main(int argc, char **argv) {
-  ros::init(argc, argv, "exp_node");
-  ros::NodeHandle nh;
-  ros::NodeHandle pnh("~");
-
-  try {
-    exp_node::ExpNode exp_node1(nh, pnh);
-    ros::spin();
-  }
-  catch (const std::exception &e) {
-    ROS_ERROR("%s: %s", nh.getNamespace().c_str(), e.what());
-  }
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<exp_node::ExpNode>());
+  rclcpp::shutdown();
+  return 0;
 }
