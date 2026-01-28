@@ -30,9 +30,12 @@
 #include <eigen3/Eigen/Eigenvalues>
 #include <eigen3/Eigen/Dense>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 
 //#include <aer_auto_exposure_gradient/Dehaze.h>
+
+#define GAMMAS_COUNT 7
 
 namespace exp_node {
 
@@ -52,39 +55,28 @@ class ExpNode : public rclcpp::Node {
   bool check_rate = false;
   double frame_rate_req = 10.0; // maximum 80 fps
 
-
-
-  double gamma[7]={1.0/1.9, 1.0/1.5, 1.0/1.2, 1.0, 1.2, 1.5, 1.9};
-  double metric[7];
+  double gamma[GAMMAS_COUNT]={1.0/1.9, 1.0/1.5, 1.0/1.2, 1.0, 1.2, 1.5, 1.9};
+  double metric[GAMMAS_COUNT];
   double max_metric;
-  double max_gamma,alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur, gain_new,upper_shutter;
-  double lower_shutter = 100.0; // adjust if necessary [unit: micro-second]
-  double kp=0.4; // contorl the speed to convergence
+  double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur, gain_new;
+  double upper_shutter_limit, upper_shutter_limit_param;
+  double lower_shutter_limit, lower_shutter_limit_param;
+  double kp; // contorl the speed to convergence
   double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper 				
   int gamma_index; // index to record the location of the optimum gamma value
   bool gain_flag = false;
-  std::string image_topic ="camera/image_raw";
+  std::string image_topic;
   //std::string service_call ="camera/spinnaker_camera_nodelet/set_parameters";
   //std::string exp_param_call = "camera/spinnaker_camera_nodelet/exposure_time";
   //std::string gain_param_call = "camera/spinnaker_camera_nodelet/gain";
-
-
-
-
 
   // Parameters that correlated to Shim's Gradient Metric
   double met_act_thresh = 0.06;
   double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper) 
 
-
-
   //ros::NodeHandle nh_;
   image_transport::ImageTransport it_;
-  image_transport::Subscriber sub_camera_; 
-
-
-
-
+  image_transport::Subscriber sub_camera_;
 };
 
 }

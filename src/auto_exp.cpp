@@ -15,50 +15,52 @@ namespace exp_node
 
 	ExpNode::ExpNode () : rclcpp::Node("exp_node"), it_ (shared_from_this())
     {
+		declare_parameter<std::string>("image_topic", "camera/image_raw");
+		get_parameter("image_topic", image_topic);
+    	RCLCPP_INFO(get_logger(), "image topic: %s", image_topic.c_str());
 
-    	// std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/image_topic", image_topic)<<"\n";
-        // std::cout <<"the value of image topic is : "<< image_topic<<"\n";
+		declare_parameter<int>("lower_shutter_speed_limit", 1000);
+		get_parameter("lower_shutter_speed_limit", lower_shutter_limit_param);
+		lower_shutter_limit = lower_shutter_limit_param;
+    	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %s", image_topic.c_str());
+
+		declare_parameter<int>("upper_shutter_speed_limit", 32754.0);
+		get_parameter("upper_shutter_speed_limit", upper_shutter_limit_param);
+    	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %s", image_topic.c_str());
+
+		declare_parameter<double>("kp", 0.4);
+		get_parameter("kp", kp);
+    	RCLCPP_INFO(get_logger(), "kp gparam: %f", kp);
+
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
         // std::cout <<"the value of service call val is : "<< service_call<<"\n";
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/exp_param_call", exp_param_call)<<"\n";
         // std::cout <<"the value of exp param is : "<< exp_param_call<<"\n";
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/gain_param_call", gain_param_call)<<"\n";
         // std::cout <<"the value of gain param is : "<< gain_param_call<<"\n";
-        // std::cout <<"the  kp given in launch file? :"<< nh.getParam("/kp", kp)<<"\n";
-        // std::cout <<"the value of kp is : "<< kp<<"\n";
         
         //cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
 		cv::namedWindow("view"); // comment in implement
 
     	generate_LUT();
-    	sub_camera_ = it_.subscribe(image_topic, 1,&ExpNode::CameraCb, this);
-
+    	sub_camera_ = it_.subscribe(image_topic, 1, &ExpNode::CameraCb, this);
     }
 	
-
-
-	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg)
-
-	{ 
-
-		if (check_rate)
-		{
-			try
-			{
+	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) { 
+		if (check_rate) {
+			try {
 				check_rate = false;
-				cv::Mat image_current;
-				cv::Mat image_capture;
 
+				cv::Mat image_capture;
+				try {
+					image_capture = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
+				} catch (cv_bridge::Exception& e) {
+					RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+				}
+
+				cv::Mat image_current;
 				//cv::Size size(512,612); // may want to try size(408,342) if speed is limited
 				cv::Size size(342,408);
-
-				// image_capture = cv_bridge::toCvCopy(msg, "mono8")->image;
-				image_capture = cv_bridge::toCvCopy(msg, "rgb8")->image;
-
-			
-				
-
-				cv::cvtColor(image_capture, image_capture, cv::COLOR_BGR2GRAY);
 				cv::resize(image_capture, image_current, size);
 				//image_capture = image_current;
 
@@ -66,34 +68,29 @@ namespace exp_node
 				// Call the image processing funciton here (i.e. the gamma processing), returning a float point gamma value
 				///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-
 				// calculate the upper limit of shutter speed [unit:microsecond]
-				if ((1.0/frame_rate_req)*1000000.0 > 32754.0){        
-					upper_shutter = 32754.0;
-					}
+				if ((1.0/frame_rate_req)*1000000.0 > upper_shutter_limit_param){        
+					upper_shutter_limit = upper_shutter_limit_param;
+				}
 				else{
-					upper_shutter = round(1000000.0/frame_rate_req);
-					}
-				
+					upper_shutter_limit = round(1000000.0/frame_rate_req);
+				}
 
 				// loop to call image_gradient_gamma function to obtain image gradient of each gamma
 				// manually adjust the possible gamma values and the number of gamma to use
-				for (int i=0; i<7; ++i)
-				{
-				   metric[i]= image_gradient_gamma(image_current, i)/1000000; // passing the corresponding index
-				//std::cout << "\nmetric " << i << " is:" <<metric[i] <<std::endl;
-				   std::cout << "  " <<metric[i] <<std::endl; // comment
+				for (int i = 0; i < GAMMAS_COUNT; ++i){
+					metric[i]= image_gradient_gamma(image_current, i)/1000000; // passing the corresponding index
+					RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
 				}
                                 
 				// loop to find out the index that correslated to the optimum/maximum gamma value
 				double temp = -1.0;				
-				for(int i = 0; i < 7; i++){
+				for(int i = 0; i < GAMMAS_COUNT; i++){
 					if (metric[i] > temp){
 						temp = metric[i];
 						gamma_index = i;
-					} // end of if
-				} // end of for loop 
+					}
+				}
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -102,46 +99,34 @@ namespace exp_node
 
 				// Call the curve fitting function to find out coefficient
 				double * coeff_curve;
-				coeff_curve = curveFit( gamma, metric);				
+				coeff_curve = curveFit(gamma, metric);				
 	
 				double coeff[6];
 				for ( int i = 0; i < 6; i++ ) {
       					
 					coeff[i] = *(coeff_curve+i);
-					std::cout << "\ncoeff " << i << " is:" << coeff[i] << std::endl; // comment
+					RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
    				}
 
-				double metric_check = 0.0;
-
 				max_gamma = findRoots1(coeff, metric[gamma_index]); // calling function findRoots1 to find opt_gamma
+				RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
 				
-				std::cout << "\nopt_gamma now is:  " << max_gamma << std::endl; //comment
-				
-				for (int i=0; i<6; i++) 
-				{
-					metric_check = metric_check + coeff[i] * pow(max_gamma,5-i);
-				}
-								
+				double metric_check = 0.0;
+				for (int i=0; i<6; i++) {
+					metric_check = metric_check + coeff[i] * pow(max_gamma, 5-i);
+				}				
+				RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
-				std::cout << "metric_check = " << metric_check << std::endl; // comment
-
-				if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	
-				{
+				if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	{
                     // find out the optimum gamma value associated with highest image gradient
 					max_gamma = gamma[gamma_index];
 				}
-				else if (metric[gamma_index] > metric_check)
-				{
+				else if (metric[gamma_index] > metric_check) {
 					max_gamma = gamma[gamma_index];
 				}
-				
-
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-				
-
-                               
 				// alpha value refers to Shim's 2014 paper
 				if (max_gamma < 1)
                     //{alpha = 0.5;} //original paper used 0.5
@@ -149,18 +134,15 @@ namespace exp_node
                 if (max_gamma >= 1)
 					{alpha = 1.0;}
 				
+				// TODO: obtain current shutter speed and gain from camera driver
 				//ros::param::get("/blackfly/spinnaker_camera_nodelet/exposure_time", shutter_cur); // get the current shutter
 				//ros::param::get("/blackfly/spinnaker_camera_nodelet/gain", gain_cur); // get the current gain
-
-				// ros::param::get(exp_param_call, shutter_cur); // get the current shutter
-				// ros::param::get(gain_param_call, gain_cur); // get the current gain
-			
+				//ros::param::get(exp_param_call, shutter_cur); // get the current shutter
+				//ros::param::get(gain_param_call, gain_cur); // get the current gain
 				
 				shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
-				
 				expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8			
 
-				
 				// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
 				R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
 				expNew = (1 + alpha * kp * (R-1)) * expCur;
@@ -172,141 +154,118 @@ namespace exp_node
 				
 				//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
 
+				if (shutter_new > upper_shutter_limit) {
+					gain_flag = true;
+					shutter_new = upper_shutter_limit;
+				}
+                else if (shutter_new < lower_shutter_limit) {
+					gain_flag = true;
+					shutter_new = lower_shutter_limit;
+				}
+                else {
+					gain_flag = false;
+				}
 
-				if (shutter_new > upper_shutter)
-                		{
-                    		gain_flag= true;
-                    		shutter_new=upper_shutter;
-                		}
-                else if (shutter_new<lower_shutter)
-                		{
-                    		gain_flag= true;
-                    		shutter_new=lower_shutter;
-		                }
-                else {gain_flag=false;}
-                
-
-
-                if (gain_flag==true)
-                	{
-                		gain_new = 6.0*(expCur-expNew)+gain_cur;
-				
-                    	if (gain_new > 30)
-                    		{gain_new = 30;}
-                    	else if (gain_new < -10)
-                    		{gain_new = -10;}
-						gain_flag = false;                    		
-                	}
-                else if  (shutter_new < upper_shutter && shutter_new > lower_shutter)
-                	{
-                    	gain_new = 0.0;
-						//gain_flag = false;
-                    	//gain_cur=gain_new;
-                	}
+                if (gain_flag == true) {
+					gain_new = 6.0 * (expCur - expNew) + gain_cur;
+			
+					if (gain_new > 30)
+						{gain_new = 30;}
+					else if (gain_new < -10)
+						{gain_new = -10;}
+					gain_flag = false;                    		
+				}
+                else if  (shutter_new < upper_shutter_limit && shutter_new > lower_shutter_limit) {
+					gain_new = 0.0;
+					//gain_flag = false;
+					//gain_cur=gain_new;
+				}
 
 				///////////////////////////// Comment or delete the following three lines in implementation ////////////////
-				std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl;
-				std::cout << "\ncurrent opt met: " << metric[gamma_index] << "; met at 1.0: " << metric[3]<<std::endl;
-
-				std::cout << "max gamma: " << max_gamma << " ; gain_new: " << gain_new << "; shutter_cur: "<< shutter_cur << " ; shutter_new:  " << shutter_new << std::endl;
+				RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
+				RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
+				RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %f; shutter_cur: %f; shutter_new: %f", max_gamma, gain_new, shutter_cur, shutter_new);
 
 				///////////////////////////////////////////////////////////////////
 				// Then call the function to determine what exposure time and gain to update
                 ///////////////////////////////////////////////////////////////////
 
-				
                 //ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
+				// TODO: add topic call to set new params
 
 			}
-			catch (cv_bridge::Exception& e)
-			{
+			catch (cv_bridge::Exception& e) {
 				RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
 			}
 		}
-		else // keeping the if-else statement here is because this makes easier to add delay
-		{
-			
+		else { // keeping the if-else statement here is because this makes easier to add delay
 			check_rate = true;
 		}
-
 	}
 
-	double ExpNode::image_gradient_gamma(cv::Mat &src_img, int j)
-	{
+	double ExpNode::image_gradient_gamma(cv::Mat &src_img, int j) {
+		// Accepting the raw image and the index of gamma value as input argument
 
-	// Accepting the raw image and the index of gamma value as input argument
-
-
-
-
-	    cv::Mat res = src_img.clone();
-	    ///////////////////// The following computes the image gradient of the gamma-processed image /////////////////////
-	    cv::Mat grad_x, grad_y;
-	    cv::Mat abs_grad_x, abs_grad_y, dst_img;
-
-	    cv::Mat weight_ori = cv::Mat::ones(res.rows,res.cols,CV_64FC1);
-	    
+		cv::Mat res = src_img.clone();
+		///////////////////// The following computes the image gradient of the gamma-processed image /////////////////////
+		cv::Mat grad_x, grad_y;
+		cv::Mat abs_grad_x, abs_grad_y, dst_img;
+		cv::Mat weight_ori = cv::Mat::ones(res.rows,res.cols,CV_64FC1);
 
 		// Using the corresponding index to find out the correct lookuptable to use
-			if (j == 0){
-				cv::LUT(src_img, lookUpTable_01, res);
-			}
-			else if (j == 1){
-				cv::LUT(src_img, lookUpTable_05, res);
-			}
-			else if (j == 2){
-				cv::LUT(src_img, lookUpTable_08, res);
-			}
-			else if (j == 3){
-				cv::LUT(src_img, lookUpTable_1, res);
-			}
-			else if (j == 4){
-				cv::LUT(src_img, lookUpTable_12, res);
-			}
-			else if (j == 5){
-				cv::LUT(src_img, lookUpTable_15, res);
-			}
-			else if (j == 6){
-				cv::LUT(src_img, lookUpTable_19, res);
-			}
+		if (j == 0){
+			cv::LUT(src_img, lookUpTable_01, res);
+		}
+		else if (j == 1){
+			cv::LUT(src_img, lookUpTable_05, res);
+		}
+		else if (j == 2){
+			cv::LUT(src_img, lookUpTable_08, res);
+		}
+		else if (j == 3){
+			cv::LUT(src_img, lookUpTable_1, res);
+		}
+		else if (j == 4){
+			cv::LUT(src_img, lookUpTable_12, res);
+		}
+		else if (j == 5){
+			cv::LUT(src_img, lookUpTable_15, res);
+		}
+		else if (j == 6){
+			cv::LUT(src_img, lookUpTable_19, res);
+		}
 
+		// Define variables that will be used in the sobel gradient determination function
+		int scale = 1;
+		int delta = 0;
+		int ddepth = CV_8UC1;
 
-	    // Define variables that will be used in the sobel gradient determination function
-	    int scale = 1;
-	    int delta = 0;
-	    int ddepth = CV_8UC1;
-	
-	    // Call the Sobel function to determine gradient image in x and y direction
-	
-	    // Gradient X
-	    cv::Sobel(res, grad_x, ddepth, 1, 0, 3, scale, delta, cv::BORDER_DEFAULT);
-	    cv::convertScaleAbs(grad_x, abs_grad_x);
+		// Call the Sobel function to determine gradient image in x and y direction
 
-	    // Gradient Y
-	    cv::Sobel(res, grad_y, ddepth, 0, 1, 3, scale, delta, cv::BORDER_DEFAULT);
-	    cv::convertScaleAbs(grad_y, abs_grad_y);
+		// Gradient X
+		cv::Sobel(res, grad_x, ddepth, 1, 0, 3, scale, delta, cv::BORDER_DEFAULT);
+		cv::convertScaleAbs(grad_x, abs_grad_x);
 
-	    cv::addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0, dst_img);
+		// Gradient Y
+		cv::Sobel(res, grad_y, ddepth, 0, 1, 3, scale, delta, cv::BORDER_DEFAULT);
+		cv::convertScaleAbs(grad_y, abs_grad_y);
 
-	    ////////////////////// The following computes the gradient metric based on the gradient image ///////////////////////////
-    
-	    // Method 1: simple sumation of total gradient
-	    //double metric= cv::sum(dst_img)[0]; // simple sum of total gradient as metric (Alternative 1 of the Shim's metric) 
-	    
-	    // Method 2: Shim's 2014 gradient metric function
-	    // Using the metric equation given in Shim's 2014 paper
-	    cv::LUT(dst_img, lookUpTable_metric, res);
-	    res.convertTo(res, CV_64FC1);
+		cv::addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0, dst_img);
 
-	    
+		////////////////////// The following computes the gradient metric based on the gradient image ///////////////////////////
 
-	    
-	    double metric= cv::sum(res)[0];
+		// Method 1: simple sumation of total gradient
+		//double metric= cv::sum(dst_img)[0]; // simple sum of total gradient as metric (Alternative 1 of the Shim's metric) 
+		
+		// Method 2: Shim's 2014 gradient metric function
+		// Using the metric equation given in Shim's 2014 paper
+		cv::LUT(dst_img, lookUpTable_metric, res);
+		res.convertTo(res, CV_64FC1);
+		
+		double metric= cv::sum(res)[0];
 
-
-	    //cv::imshow("image_to_show",dst_img); // comment later
-	    return metric;
-
+		//cv::imshow("image_to_show",dst_img); // comment later
+		return metric;
 	} 
 
 
@@ -472,10 +431,10 @@ namespace exp_node
 		  		if (met_temp > check) // if the root can return a metric that is greater than current metric
 		  		{
 		  			opt_gamma = roots1[i];
-		  			std::cout << "\n in function maximum metric is: " << met_temp << "\n" << std::endl;
+		  			RCLCPP_INFO(get_logger(), "in function maximum metric is: %f", met_temp);
 		  		}
 		  	}
-		  std::cout << "eig(i) is: " << std::real(eig (i)) << "   ima: " << std::imag (eig (i)) << std::endl;
+			RCLCPP_INFO(get_logger(), "eig(i) is: %f, ima: %f", std::real(eig(i)), std::imag(eig(i)));
 		} // end of for loop with index i
 		return opt_gamma;
 	} // END of function of findRoots1()
