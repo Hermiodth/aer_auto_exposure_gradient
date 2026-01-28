@@ -22,11 +22,11 @@ namespace exp_node
 		declare_parameter<int>("lower_shutter_speed_limit", 1000);
 		get_parameter("lower_shutter_speed_limit", lower_shutter_limit_param);
 		lower_shutter_limit = lower_shutter_limit_param;
-    	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %s", image_topic.c_str());
+    	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %f", lower_shutter_limit);
 
-		declare_parameter<int>("upper_shutter_speed_limit", 32754.0);
+		declare_parameter<int>("upper_shutter_speed_limit", 32754);
 		get_parameter("upper_shutter_speed_limit", upper_shutter_limit_param);
-    	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %s", image_topic.c_str());
+    	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %f", (double)upper_shutter_limit_param);
 
 		declare_parameter<double>("kp", 0.4);
 		get_parameter("kp", kp);

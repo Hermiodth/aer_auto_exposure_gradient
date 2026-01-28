@@ -59,8 +59,8 @@ class ExpNode : public rclcpp::Node {
   double metric[GAMMAS_COUNT];
   double max_metric;
   double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur, gain_new;
-  double upper_shutter_limit, upper_shutter_limit_param;
-  double lower_shutter_limit, lower_shutter_limit_param;
+  int upper_shutter_limit_param, lower_shutter_limit_param;
+  double upper_shutter_limit, lower_shutter_limit;
   double kp; // contorl the speed to convergence
   double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper 				
   int gamma_index; // index to record the location of the optimum gamma value
