@@ -13,32 +13,40 @@ namespace exp_node
 	cv::Mat lookUpTable_19(1, 256, CV_8U);
 	cv::Mat lookUpTable_metric(1, 256, CV_8U);
 
-	ExpNode::ExpNode () : rclcpp::Node("exp_node"), it_ (shared_from_this())
-    {
+	//ExpNode::ExpNode () : rclcpp::Node("exp_node"), callback_start_time(nullptr)
+
+	void ExpNode::init(std::shared_ptr<rclcpp::Node> node_ptr){
+		it_ = std::make_shared<image_transport::ImageTransport>(node_ptr);
+
 		declare_parameter<std::string>("image_topic", "camera/image_raw");
 		get_parameter("image_topic", image_topic);
     	RCLCPP_INFO(get_logger(), "image topic: %s", image_topic.c_str());
 
-		declare_parameter<int>("lower_shutter_speed_limit", 1000);
+		declare_parameter<int>("lower_shutter_speed_limit", 10000);
+		int lower_shutter_limit_param;
 		get_parameter("lower_shutter_speed_limit", lower_shutter_limit_param);
-		lower_shutter_limit = lower_shutter_limit_param;
-    	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %f", lower_shutter_limit);
+		lower_shutter_limit = (double)lower_shutter_limit_param/1000000.0;
+    	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %.0f", lower_shutter_limit);
 
 		declare_parameter<int>("upper_shutter_speed_limit", 32754);
+		int upper_shutter_limit_param;
 		get_parameter("upper_shutter_speed_limit", upper_shutter_limit_param);
-    	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %f", (double)upper_shutter_limit_param);
+		upper_shutter_limit = (double)upper_shutter_limit_param/1000000.0;
+    	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %.0f", upper_shutter_limit);
 
 		declare_parameter<double>("kp", 0.4);
 		get_parameter("kp", kp);
-    	RCLCPP_INFO(get_logger(), "kp param: %f", kp);
+    	RCLCPP_INFO(get_logger(), "kp param: %.2f", kp);
 
-		declare_parameter<int>("initial_shutter_speed", 5000);
+		declare_parameter<int>("initial_shutter_speed", 20000);
+		int initial_shutter_speed;
 		get_parameter("initial_shutter_speed", initial_shutter_speed);
+		shutter_cur = (double)initial_shutter_speed/1000000.0;	// from microseconds to seconds
     	RCLCPP_INFO(get_logger(), "initial shutter speed: %i", initial_shutter_speed);
 
 		declare_parameter<double>("initial_gain", 0.0);
-		get_parameter("initial_gain", initial_gain);
-    	RCLCPP_INFO(get_logger(), "initial gain: %f", initial_gain);
+		get_parameter("initial_gain", gain_cur);
+    	RCLCPP_INFO(get_logger(), "initial gain: %.2f", gain_cur);
 
 		declare_parameter<int>("startup_delay", 3);
 		get_parameter("startup_delay", startup_delay);
@@ -55,7 +63,7 @@ namespace exp_node
 		cv::namedWindow("view"); // comment in implement
 
     	generate_LUT();
-    	sub_camera_ = it_.subscribe(image_topic, 1, &ExpNode::CameraCb, this);
+    	sub_camera_ = it_->subscribe(image_topic, 1, &ExpNode::CameraCb, this);
 
 		declare_parameter<std::string>("shutter_speed_apply_topic", "expose_us");
 		std::string shutter_speed_topic;
@@ -68,9 +76,19 @@ namespace exp_node
 		get_parameter("gain_apply_topic", gain_topic);
     	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
-    }
+	}
 	
-	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) { 
+	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
+		if(!callback_start_time) callback_start_time = std::make_shared<rclcpp::Time>(now());
+		if((now() - *callback_start_time.get()).seconds() < startup_delay) {
+			RCLCPP_INFO(get_logger(), "startup delay: %i; will wait for %f and publishing initial shutter speed of %.0f ms and gain of %.2f", 
+			startup_delay, (now() - *callback_start_time.get()).seconds(), shutter_cur * 1000000.0, gain_cur);
+
+			ChangeParam(shutter_cur, gain_cur);
+
+			return;
+		}
+
 		if (check_rate) {
 			try {
 				check_rate = false;
@@ -93,12 +111,12 @@ namespace exp_node
 				///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 				// calculate the upper limit of shutter speed [unit:microsecond]
-				if ((1.0/frame_rate_req)*1000000.0 > upper_shutter_limit_param){        
-					upper_shutter_limit = upper_shutter_limit_param;
-				}
-				else{
-					upper_shutter_limit = round(1000000.0/frame_rate_req);
-				}
+				// if ((1.0/frame_rate_req)*1000000.0 > upper_shutter_limit_param){        
+				// 	upper_shutter_limit = upper_shutter_limit_param;
+				// }
+				// else{
+				// 	upper_shutter_limit = round(1000000.0/frame_rate_req);
+				// }
 
 				// loop to call image_gradient_gamma function to obtain image gradient of each gamma
 				// manually adjust the possible gamma values and the number of gamma to use
@@ -107,7 +125,7 @@ namespace exp_node
 					RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
 				}
                                 
-				// loop to find out the index that correslated to the optimum/maximum gamma value
+				// loop to find out the index that correspond to the optimum/maximum gamma value
 				double temp = -1.0;				
 				for(int i = 0; i < GAMMAS_COUNT; i++){
 					if (metric[i] > temp){
@@ -116,17 +134,15 @@ namespace exp_node
 					}
 				}
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////  Curve Fitting  ///////////////////////////////////////////////
 
-
 				// Call the curve fitting function to find out coefficient
 				double * coeff_curve;
-				coeff_curve = curveFit(gamma, metric);				
+				coeff_curve = curveFit(gamma, metric);
 	
-				double coeff[6];
-				for ( int i = 0; i < 6; i++ ) {
+				double coeff[POLYNOME_COEFFS];
+				for ( int i = 0; i < POLYNOME_COEFFS; i++ ) {
       					
 					coeff[i] = *(coeff_curve+i);
 					RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
@@ -136,7 +152,7 @@ namespace exp_node
 				RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
 				
 				double metric_check = 0.0;
-				for (int i=0; i<6; i++) {
+				for (int i=0; i < POLYNOME_COEFFS; i++) {
 					metric_check = metric_check + coeff[i] * pow(max_gamma, 5-i);
 				}				
 				RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
@@ -164,7 +180,7 @@ namespace exp_node
 				//ros::param::get(exp_param_call, shutter_cur); // get the current shutter
 				//ros::param::get(gain_param_call, gain_cur); // get the current gain
 				
-				shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
+				//shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
 				expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8			
 
 				// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
@@ -190,33 +206,33 @@ namespace exp_node
 					gain_flag = false;
 				}
 
-                if (gain_flag == true) {
-					gain_new = 6.0 * (expCur - expNew) + gain_cur;
+                // if (gain_flag == true) {
+				// 	gain_new = 6.0 * (expCur - expNew) + gain_cur;
 			
-					if (gain_new > 30)
-						{gain_new = 30;}
-					else if (gain_new < -10)
-						{gain_new = -10;}
-					gain_flag = false;                    		
-				}
-                else if  (shutter_new < upper_shutter_limit && shutter_new > lower_shutter_limit) {
-					gain_new = 0.0;
-					//gain_flag = false;
-					//gain_cur=gain_new;
-				}
+				// 	if (gain_new > 30)
+				// 		{gain_new = 30;}
+				// 	else if (gain_new < -10)
+				// 		{gain_new = -10;}
+				// 	gain_flag = false;                    		
+				// }
+                // else if  (shutter_new < upper_shutter_limit && shutter_new > lower_shutter_limit) {
+				// 	gain_new = 0.0;
+				// 	//gain_flag = false;
+				// 	//gain_cur=gain_new;
+				// }
 
 				///////////////////////////// Comment or delete the following three lines in implementation ////////////////
 				RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
 				RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
-				RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %f; shutter_cur: %f; shutter_new: %f", max_gamma, gain_new, shutter_cur, shutter_new);
+				RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %.2f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, gain_new, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
 
 				///////////////////////////////////////////////////////////////////
 				// Then call the function to determine what exposure time and gain to update
                 ///////////////////////////////////////////////////////////////////
 
                 //ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
-				// TODO: add topic call to set new params
-
+				ChangeParam(shutter_new, 0.0); // may input the gain and exposure time update
+				shutter_cur = shutter_new;
 			}
 			catch (cv_bridge::Exception& e) {
 				RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
@@ -290,8 +306,17 @@ namespace exp_node
 
 		//cv::imshow("image_to_show",dst_img); // comment later
 		return metric;
-	} 
+	}
 
+	void ExpNode::ChangeParam (double shutter_new, double gain_new) {
+		std_msgs::msg::Int32 shutter_speed_msg;
+		shutter_speed_msg.data = shutter_new * 1000000; // from seconds to microseconds
+		shutter_speed_us_pub->publish(shutter_speed_msg);
+
+		std_msgs::msg::Float32 gain_msg;
+		gain_msg.data = gain_new;
+		gain_db_pub->publish(gain_msg);
+	}
 
     // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings
     // {
@@ -410,88 +435,172 @@ namespace exp_node
 	} // end of generate_LUT()
 	
 
-	double  ExpNode::findRoots1 (double a[6], double check)
-	{
-		static double roots1[4];
-		double ad[5];
-		double opt_gamma = 997.0, met_temp;
-		ad[4] = 5 * a[0];
-		ad[3] = 4 * a[1];
-		ad[2] = 3 * a[2];
-		ad[1] = 2 * a[3];
-		ad[0] = a[4];
-		Eigen::MatrixXd companion_mat (4, 4);
+	// double  ExpNode::findRoots1 (double a[6], double check)
+	// {
+	// 	static double roots1[4];
+	// 	double ad[5];
+	// 	double opt_gamma = 997.0, met_temp;
+	// 	ad[4] = 5 * a[0];
+	// 	ad[3] = 4 * a[1];
+	// 	ad[2] = 3 * a[2];
+	// 	ad[1] = 2 * a[3];
+	// 	ad[0] = a[4];
+	// 	Eigen::MatrixXd companion_mat (4, 4);
 
-		for (int n = 0; n < 4; n++)
-		{
-			for (int m = 0; m < 4; m++)
-				{
-				 if (n == m + 1)
-				 	companion_mat (n, m) = 1.0;
-				 if (m == 4 - 1)
-					companion_mat (n, m) = -ad[n] / ad[4];
-			} // end of for loop with index m
-		} // end of for loop with index n
+	// 	for (int n = 0; n < 4; n++)
+	// 	{
+	// 		for (int m = 0; m < 4; m++)
+	// 			{
+	// 			 if (n == m + 1)
+	// 			 	companion_mat (n, m) = 1.0;
+	// 			 if (m == 4 - 1)
+	// 				companion_mat (n, m) = -ad[n] / ad[4];
+	// 		} // end of for loop with index m
+	// 	} // end of for loop with index n
 
-		Eigen::MatrixXcd eig = companion_mat.eigenvalues ();
-		for (int i = 0; i < 4; i++)
-		{
-		 	met_temp = 0.0; // met_temp is used to check if the root can return a larger metric      
-		 	if (std::imag (eig (i)) == 0) // if statement to determine whether or not root is true
-		  	{
-		  		roots1[i] = std::real(eig (i));	 
-		  	}
-		  	else
-		  	{
+	// 	Eigen::MatrixXcd eig = companion_mat.eigenvalues ();
+	// 	for (int i = 0; i < 4; i++)
+	// 	{
+	// 	 	met_temp = 0.0; // met_temp is used to check if the root can return a larger metric      
+	// 	 	if (std::imag (eig (i)) == 0) // if statement to determine whether or not root is true
+	// 	  	{
+	// 	  		roots1[i] = std::real(eig (i));	 
+	// 	  	}
+	// 	  	else
+	// 	  	{
 
-		  		roots1[i] = 1000; // if root is imaginary, assign an overshoot value
-		  	}
-		  if ((roots1[i] < 2.0) && (roots1[i] > 0.5)) //check if the calculated root is within range (.5,2)
-		  	{
-		  		for (int j=0; j<6; j++) 
-		  		{
-		  			met_temp = met_temp + a[j] * pow(roots1[i],5-j);
-		  		}
-		  		if (met_temp > check) // if the root can return a metric that is greater than current metric
-		  		{
-		  			opt_gamma = roots1[i];
-		  			RCLCPP_INFO(get_logger(), "in function maximum metric is: %f", met_temp);
-		  		}
-		  	}
-			RCLCPP_INFO(get_logger(), "eig(i) is: %f, ima: %f", std::real(eig(i)), std::imag(eig(i)));
-		} // end of for loop with index i
-		return opt_gamma;
-	} // END of function of findRoots1()
+	// 	  		roots1[i] = 1000; // if root is imaginary, assign an overshoot value
+	// 	  	}
+	// 	  if ((roots1[i] < 2.0) && (roots1[i] > 0.5)) //check if the calculated root is within range (.5,2)
+	// 	  	{
+	// 	  		for (int j=0; j<6; j++) 
+	// 	  		{
+	// 	  			met_temp = met_temp + a[j] * pow(roots1[i],5-j);
+	// 	  		}
+	// 	  		if (met_temp > check) // if the root can return a metric that is greater than current metric
+	// 	  		{
+	// 	  			opt_gamma = roots1[i];
+	// 	  			RCLCPP_INFO(get_logger(), "in function maximum metric is: %f", met_temp);
+	// 	  		}
+	// 	  	}
+	// 		RCLCPP_INFO(get_logger(), "eig(i) is: %f, ima: %f", std::real(eig(i)), std::imag(eig(i)));
+	// 	} // end of for loop with index i
+	// 	return opt_gamma;
+	// } // END of function of findRoots1()
 
-
-double * ExpNode::curveFit (double x[7], double y[7])
-{ static double coff[6];
-  int i, j, k, n, N;
-
-  n = 5;
-  
-  Eigen::MatrixXd A(7,6);
-  Eigen::MatrixXd b(7,1);
-   
-  for (i = 0; i <7; i++)
-      for (j = 5; j>=0; j--)
-	{A(i,5-j) = pow (x[i], j);}
+double ExpNode::findRoots1(double a[3], double check)
+{
+    double opt_gamma = 997.0, met_temp;
     
-  for (i = 0; i <7; i++)
-   {  b(i,0) = y[i]; } 
+    // Derivative of quadratic ax^2 + bx + c is: 2ax + b
+    // Setting derivative = 0: 2ax + b = 0
+    // Root: x = -b/(2a)
+    
+    double derivative_root;
+    
+    // Check if we have a valid quadratic (a[0] != 0)
+    if (std::abs(a[0]) < 1e-10)
+    {
+        RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid quadratic");
+        return opt_gamma;
+    }
+    
+    // Calculate the critical point (where derivative = 0)
+    derivative_root = -a[1] / (2.0 * a[0]);
+    
+    RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
+    
+    // Check if the root is within range (0.5, 2.0)
+    if ((derivative_root < 2.0) && (derivative_root > 0.5))
+    {
+        // Evaluate the polynomial at this point
+        met_temp = a[0] * derivative_root * derivative_root + 
+                   a[1] * derivative_root + 
+                   a[2];
+        
+        RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
+        
+        // Check if this gives a better metric than current
+        if (met_temp > check)
+        {
+            opt_gamma = derivative_root;
+            RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
+                       met_temp, opt_gamma);
+        }
+    }
+    else
+    {
+        RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", 
+                   derivative_root);
+    }
+    
+    return opt_gamma;
+} // END of function findRoots1()
+
+
+// double * ExpNode::curveFit (double x[7], double y[7])
+// { static double coff[6];
+//   int i, j, k, n, N;
+
+//   n = 5;
   
-  Eigen::MatrixXd A1 = A.transpose()*A;
-  Eigen::MatrixXd b1 = A.transpose()*b; 
-  //Eigen::MatrixXd Q =A1.colPivHouseholderQr().solve(b1);
-  Eigen::MatrixXd Q =A1.inverse()*b1;
-
-  for(i=0; i<n+1; i++)
-  {  coff[i] = Q(i);
-	//std::cout << "\nx is: " << x[i] << "Q is: " << coff[i] << std::endl;
-}
-
-  return coff;
+//   Eigen::MatrixXd A(7,6);
+//   Eigen::MatrixXd b(7,1);
    
+//   for (i = 0; i <7; i++)
+//       for (j = 5; j>=0; j--)
+// 	{A(i,5-j) = pow (x[i], j);}
+    
+//   for (i = 0; i <7; i++)
+//    {  b(i,0) = y[i]; } 
+  
+//   Eigen::MatrixXd A1 = A.transpose()*A;
+//   Eigen::MatrixXd b1 = A.transpose()*b; 
+//   //Eigen::MatrixXd Q =A1.colPivHouseholderQr().solve(b1);
+//   Eigen::MatrixXd Q =A1.inverse()*b1;
+
+//   for(i=0; i<n+1; i++)
+//   {  coff[i] = Q(i);
+// 	//std::cout << "\nx is: " << x[i] << "Q is: " << coff[i] << std::endl;
+// }
+
+//   return coff;
+   
+// } // END of function curveFit()
+
+double * ExpNode::curveFit(double x[7], double y[7])
+{ 
+    static double coff[3];  // Only need 3 coefficients for degree 2
+    int i;
+  
+    // Create matrices for degree 2 polynomial: y = a*x^2 + b*x + c
+    Eigen::MatrixXd A(7, 3);
+    Eigen::MatrixXd b(7, 1);
+   
+    // Fill matrix A with [x^2, x, 1] for each point
+    for (i = 0; i < 7; i++)
+    {
+        A(i, 0) = x[i] * x[i];  // x^2
+        A(i, 1) = x[i];         // x
+        A(i, 2) = 1.0;          // constant term
+    }
+    
+    // Fill vector b with y values
+    for (i = 0; i < 7; i++)
+    {
+        b(i, 0) = y[i];
+    }
+  
+    // Solve least squares problem directly (no normal equations)
+    Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
+
+    // Extract coefficients
+    for (i = 0; i < 3; i++)
+    {
+        coff[i] = Q(i);
+    }
+
+    return coff;
 } // END of function curveFit()
 
 

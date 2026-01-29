@@ -38,18 +38,21 @@
 //#include <aer_auto_exposure_gradient/Dehaze.h>
 
 #define GAMMAS_COUNT 7
+#define POLYNOME_COEFFS 3
 
 namespace exp_node {
 
 class ExpNode : public rclcpp::Node {
  public:
-  ExpNode();
+
+  ExpNode() : rclcpp::Node("exp_node"), callback_start_time(nullptr), it_(nullptr) {}
+  void init(std::shared_ptr<rclcpp::Node> node_ptr);
 
  private:
  
   void CameraCb(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
   double image_gradient_gamma(cv::Mat &src_img, int j);
-  //void ChangeParam (double shutter_new, double gain_new);
+  void ChangeParam (double shutter_new, double gain_new);
   
   double * curveFit (double x[7], double y[7]);
   double  findRoots1 (double a[6], double check);
@@ -61,10 +64,7 @@ class ExpNode : public rclcpp::Node {
   double metric[GAMMAS_COUNT];
   double max_metric;
   double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur, gain_new;
-  int upper_shutter_limit_param, lower_shutter_limit_param;
   double upper_shutter_limit, lower_shutter_limit;
-  int initial_shutter_speed;
-  double initial_gain;
   int startup_delay;
   double kp; // contorl the speed to convergence
   double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper 				
@@ -80,11 +80,13 @@ class ExpNode : public rclcpp::Node {
   double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper) 
 
   //ros::NodeHandle nh_;
-  image_transport::ImageTransport it_;
+  std::shared_ptr<image_transport::ImageTransport> it_;
   image_transport::Subscriber sub_camera_;
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr shutter_speed_us_pub;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
+
+  std::shared_ptr<rclcpp::Time> callback_start_time;
 };
 
 }
