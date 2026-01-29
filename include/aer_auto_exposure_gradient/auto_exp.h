@@ -32,6 +32,8 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/float32.hpp>
 
 //#include <aer_auto_exposure_gradient/Dehaze.h>
 
@@ -61,6 +63,9 @@ class ExpNode : public rclcpp::Node {
   double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur, gain_new;
   int upper_shutter_limit_param, lower_shutter_limit_param;
   double upper_shutter_limit, lower_shutter_limit;
+  int initial_shutter_speed;
+  double initial_gain;
+  int startup_delay;
   double kp; // contorl the speed to convergence
   double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper 				
   int gamma_index; // index to record the location of the optimum gamma value
@@ -77,6 +82,9 @@ class ExpNode : public rclcpp::Node {
   //ros::NodeHandle nh_;
   image_transport::ImageTransport it_;
   image_transport::Subscriber sub_camera_;
+
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr shutter_speed_us_pub;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
 };
 
 }

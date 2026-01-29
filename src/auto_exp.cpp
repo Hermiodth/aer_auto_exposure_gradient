@@ -30,7 +30,19 @@ namespace exp_node
 
 		declare_parameter<double>("kp", 0.4);
 		get_parameter("kp", kp);
-    	RCLCPP_INFO(get_logger(), "kp gparam: %f", kp);
+    	RCLCPP_INFO(get_logger(), "kp param: %f", kp);
+
+		declare_parameter<int>("initial_shutter_speed", 5000);
+		get_parameter("initial_shutter_speed", initial_shutter_speed);
+    	RCLCPP_INFO(get_logger(), "initial shutter speed: %i", initial_shutter_speed);
+
+		declare_parameter<double>("initial_gain", 0.0);
+		get_parameter("initial_gain", initial_gain);
+    	RCLCPP_INFO(get_logger(), "initial gain: %f", initial_gain);
+
+		declare_parameter<int>("startup_delay", 3);
+		get_parameter("startup_delay", startup_delay);
+    	RCLCPP_INFO(get_logger(), "startup delay: %i", startup_delay);
 
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
         // std::cout <<"the value of service call val is : "<< service_call<<"\n";
@@ -39,11 +51,23 @@ namespace exp_node
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/gain_param_call", gain_param_call)<<"\n";
         // std::cout <<"the value of gain param is : "<< gain_param_call<<"\n";
         
-        //cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
+        // cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
 		cv::namedWindow("view"); // comment in implement
 
     	generate_LUT();
     	sub_camera_ = it_.subscribe(image_topic, 1, &ExpNode::CameraCb, this);
+
+		declare_parameter<std::string>("shutter_speed_apply_topic", "expose_us");
+		std::string shutter_speed_topic;
+		get_parameter("shutter_speed_apply_topic", shutter_speed_topic);
+    	RCLCPP_INFO(get_logger(), "shutter speed apply topic: %s", shutter_speed_topic.c_str());
+		shutter_speed_us_pub = this->create_publisher<std_msgs::msg::Int32>(shutter_speed_topic, 10);
+
+		declare_parameter<std::string>("gain_apply_topic", "gain_db");
+		std::string gain_topic;
+		get_parameter("gain_apply_topic", gain_topic);
+    	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
+		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
     }
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) { 
