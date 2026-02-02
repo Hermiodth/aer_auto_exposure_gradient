@@ -88,8 +88,13 @@ class ExpNode : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
 
   std::shared_ptr<rclcpp::Time> callback_start_time;
+  std::shared_ptr<rclcpp::Time> zeroing_duration;
 
   FILE* gnuplotPipe;
+
+  int test_shutter_speed;
+  int true_best_shutter_speed;
+  double metric_tmp;
 };
 
 }

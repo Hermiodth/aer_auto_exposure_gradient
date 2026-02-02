@@ -29,7 +29,7 @@ namespace exp_node
     	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %.0f", lower_shutter_limit);
 
 		//declare_parameter<int>("upper_shutter_speed_limit", 32754);
-		declare_parameter<int>("upper_shutter_speed_limit", 300000);
+		declare_parameter<int>("upper_shutter_speed_limit", 70000);
 		int upper_shutter_limit_param;
 		get_parameter("upper_shutter_speed_limit", upper_shutter_limit_param);
 		upper_shutter_limit = (double)upper_shutter_limit_param/1000000.0;
@@ -79,6 +79,9 @@ namespace exp_node
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
 
 		gnuplotPipe = popen("gnuplot -persist", "w");
+
+		test_shutter_speed = lower_shutter_limit;
+		metric_tmp = 0;
 	}
 
 	void ExpNode::gnulot(double * coeff_curve){
@@ -108,6 +111,42 @@ namespace exp_node
 	}
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
+		//// code for measuring the true optimal exposure time
+
+		// if(!zeroing_duration) zeroing_duration = std::make_shared<rclcpp::Time>(now());
+		// if((now() - *zeroing_duration.get()).seconds() < 1) {
+		// 	ChangeParam(0, 0.0);
+		// 	return;
+		// }
+
+		// if(test_shutter_speed < upper_shutter_limit*1000000.0) {
+		// 	cv::Mat image1;
+		// 	try {
+		// 		image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
+		// 	} catch (cv_bridge::Exception& e) {
+		// 		RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+		// 	}
+
+		// 	cv::Mat image2;
+		// 	cv::Size size(342,408);
+		// 	cv::resize(image1, image2, size);
+
+		// 	double test_metric = image_gradient_gamma(image2, 3);
+		// 	RCLCPP_INFO(get_logger(), "test shutter: %i, test metric: %f", test_shutter_speed, test_metric);
+		// 	if(test_metric > metric_tmp) {
+		// 		true_best_shutter_speed = test_shutter_speed;
+		// 		metric_tmp = test_metric;
+		// 	}
+		// 	RCLCPP_INFO(get_logger(), "best shutter: %i, test metric: %f", true_best_shutter_speed, metric_tmp);
+
+		// 	ChangeParam(((double)test_shutter_speed)/1000000.0, 0.0);
+		// 	test_shutter_speed += 1000;
+
+		// 	usleep(300000);
+
+		// 	return;
+		// }
+
 		if(!callback_start_time) callback_start_time = std::make_shared<rclcpp::Time>(now());
 		if((now() - *callback_start_time.get()).seconds() < startup_delay) {
 			RCLCPP_INFO(get_logger(), "startup delay: %i; will wait for %f and publishing initial shutter speed of %.0f ms and gain of %.2f", 
@@ -199,11 +238,13 @@ namespace exp_node
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 				// alpha value refers to Shim's 2014 paper
-				if (max_gamma < 1)
-                    //{alpha = 0.5;} //original paper used 0.5
-					{alpha = 1.0;}
-                if (max_gamma >= 1)
-					{alpha = 1.0;}
+				// if (max_gamma < 1)
+                //     //{alpha = 0.5;} //original paper used 0.5
+				// 	{alpha = 1.0;}
+                // if (max_gamma >= 1)
+				// 	{alpha = 1.0;}
+
+				alpha = 1.0;
 				
 				// TODO: obtain current shutter speed and gain from camera driver
 				//ros::param::get("/blackfly/spinnaker_camera_nodelet/exposure_time", shutter_cur); // get the current shutter
@@ -212,20 +253,26 @@ namespace exp_node
 				//ros::param::get(gain_param_call, gain_cur); // get the current gain
 				
 				//shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
-				//expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8			
+				expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8
+				//RCLCPP_INFO(get_logger(), "============================================");
+				//RCLCPP_INFO(get_logger(), "shutter_cur: %f", shutter_cur);
+				//RCLCPP_INFO(get_logger(), "expCur: %f", expCur);		
 
 				// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
-				// R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
-				// expNew = (1 + alpha * kp * (R-1)) * expCur;
+				R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
+				expNew = (1 + alpha * kp * (R-1)) * expCur;
  	
 				// Shim's 2014 version of update function
-				//expNew = (1+ kp * alpha * (1-max_gamma)) * expCur; 
+				// expNew = (1+ kp * alpha * (1-max_gamma)) * expCur;
+				//RCLCPP_INFO(get_logger(), "expNew: %f", expNew); 
 			
-				////shutter_new = (7.84) * 1000000/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
+				shutter_new = (7.84) * 1/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
+				//RCLCPP_INFO(get_logger(), "shutter_new: %f", shutter_new);
+				//RCLCPP_INFO(get_logger(), "============================================");
 				
 				//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
 
-				shutter_new = shutter_cur + 1000.0*(gamma_index - 3)/1000000.0;
+				//shutter_new = shutter_cur + 1000.0*(gamma_index - 3)/1000000.0;
 
 				if (shutter_new > upper_shutter_limit) {
 					gain_flag = true;
@@ -267,6 +314,8 @@ namespace exp_node
                 //ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
 				ChangeParam(shutter_new, 0.0); // may input the gain and exposure time update
 				shutter_cur = shutter_new;
+
+				RCLCPP_INFO(get_logger(), "true_best_shutter_speed/shutter_cur: %f", (true_best_shutter_speed/1000000.0)/shutter_cur);
 			}
 			catch (cv_bridge::Exception& e) {
 				RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
