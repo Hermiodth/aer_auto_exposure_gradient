@@ -38,7 +38,7 @@
 //#include <aer_auto_exposure_gradient/Dehaze.h>
 
 #define GAMMAS_COUNT 7
-#define POLYNOME_COEFFS 3
+#define POLYNOME_DEGREE 2
 
 namespace exp_node {
 
@@ -50,6 +50,7 @@ class ExpNode : public rclcpp::Node {
 
  private:
  
+  void gnulot(double * coeff_curve);
   void CameraCb(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
   double image_gradient_gamma(cv::Mat &src_img, int j);
   void ChangeParam (double shutter_new, double gain_new);
@@ -63,7 +64,7 @@ class ExpNode : public rclcpp::Node {
   double gamma[GAMMAS_COUNT]={1.0/1.9, 1.0/1.5, 1.0/1.2, 1.0, 1.2, 1.5, 1.9};
   double metric[GAMMAS_COUNT];
   double max_metric;
-  double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur, gain_new;
+  double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur;//, gain_new;
   double upper_shutter_limit, lower_shutter_limit;
   int startup_delay;
   double kp; // contorl the speed to convergence
@@ -87,6 +88,8 @@ class ExpNode : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
 
   std::shared_ptr<rclcpp::Time> callback_start_time;
+
+  FILE* gnuplotPipe;
 };
 
 }

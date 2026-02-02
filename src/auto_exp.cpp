@@ -28,7 +28,8 @@ namespace exp_node
 		lower_shutter_limit = (double)lower_shutter_limit_param/1000000.0;
     	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %.0f", lower_shutter_limit);
 
-		declare_parameter<int>("upper_shutter_speed_limit", 32754);
+		//declare_parameter<int>("upper_shutter_speed_limit", 32754);
+		declare_parameter<int>("upper_shutter_speed_limit", 300000);
 		int upper_shutter_limit_param;
 		get_parameter("upper_shutter_speed_limit", upper_shutter_limit_param);
 		upper_shutter_limit = (double)upper_shutter_limit_param/1000000.0;
@@ -48,7 +49,7 @@ namespace exp_node
 		get_parameter("initial_gain", gain_cur);
     	RCLCPP_INFO(get_logger(), "initial gain: %.2f", gain_cur);
 
-		declare_parameter<int>("startup_delay", 3);
+		declare_parameter<int>("startup_delay", 1);
 		get_parameter("startup_delay", startup_delay);
     	RCLCPP_INFO(get_logger(), "startup delay: %i", startup_delay);
 
@@ -76,6 +77,34 @@ namespace exp_node
 		get_parameter("gain_apply_topic", gain_topic);
     	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
+
+		gnuplotPipe = popen("gnuplot -persist", "w");
+	}
+
+	void ExpNode::gnulot(double * coeff_curve){
+		// Plot both the data points and the fitted curve
+		fprintf(gnuplotPipe, "plot '-' with points pointtype 3 pointsize 1.5 title 'Data', ");
+		fprintf(gnuplotPipe, "'-' with lines linewidth 2 title 'Fitted Parabola'\n");
+		
+		// Send the data points (gamma/metric)
+		for (int i = 0; i < GAMMAS_COUNT; ++i){
+			fprintf(gnuplotPipe, "%f %f\n", gamma[i], metric[i]);
+		}
+		fprintf(gnuplotPipe, "e\n");
+		
+		// Send the parabola curve points
+		double x_start = gamma[0];
+		double x_end = gamma[GAMMAS_COUNT - 1];
+		double step = (x_end - x_start) / (10.0 * GAMMAS_COUNT);
+		
+		for (double x = x_start; x <= x_end; x += step){
+			double y = coeff_curve[0] * x * x + coeff_curve[1] * x + coeff_curve[2];
+			fprintf(gnuplotPipe, "%f %f\n", x, y);
+		}
+		fprintf(gnuplotPipe, "e\n");
+		
+		fflush(gnuplotPipe);
+		usleep(50000);  // 50ms delay
 	}
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
@@ -122,7 +151,7 @@ namespace exp_node
 				// manually adjust the possible gamma values and the number of gamma to use
 				for (int i = 0; i < GAMMAS_COUNT; ++i){
 					metric[i]= image_gradient_gamma(image_current, i)/1000000; // passing the corresponding index
-					RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
+					//RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
 				}
                                 
 				// loop to find out the index that correspond to the optimum/maximum gamma value
@@ -140,22 +169,24 @@ namespace exp_node
 				// Call the curve fitting function to find out coefficient
 				double * coeff_curve;
 				coeff_curve = curveFit(gamma, metric);
+
+				//gnulot(coeff_curve);
 	
-				double coeff[POLYNOME_COEFFS];
-				for ( int i = 0; i < POLYNOME_COEFFS; i++ ) {
+				double coeff[POLYNOME_DEGREE+1];
+				for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
       					
 					coeff[i] = *(coeff_curve+i);
-					RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
+					//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
    				}
 
 				max_gamma = findRoots1(coeff, metric[gamma_index]); // calling function findRoots1 to find opt_gamma
-				RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
+				//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
 				
 				double metric_check = 0.0;
-				for (int i=0; i < POLYNOME_COEFFS; i++) {
-					metric_check = metric_check + coeff[i] * pow(max_gamma, 5-i);
+				for (int i=0; i < POLYNOME_DEGREE+1; i++) {
+					metric_check = metric_check + coeff[i] * pow(max_gamma, POLYNOME_DEGREE+1-i);
 				}				
-				RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
+				//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
 				if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	{
                     // find out the optimum gamma value associated with highest image gradient
@@ -181,18 +212,20 @@ namespace exp_node
 				//ros::param::get(gain_param_call, gain_cur); // get the current gain
 				
 				//shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
-				expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8			
+				//expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8			
 
 				// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
-				R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
-				expNew = (1 + alpha * kp * (R-1)) * expCur;
+				// R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
+				// expNew = (1 + alpha * kp * (R-1)) * expCur;
  	
 				// Shim's 2014 version of update function
 				//expNew = (1+ kp * alpha * (1-max_gamma)) * expCur; 
 			
-				shutter_new = (7.84) * 1000000/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
+				////shutter_new = (7.84) * 1000000/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
 				
 				//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
+
+				shutter_new = shutter_cur + 1000.0*(gamma_index - 3)/1000000.0;
 
 				if (shutter_new > upper_shutter_limit) {
 					gain_flag = true;
@@ -222,9 +255,10 @@ namespace exp_node
 				// }
 
 				///////////////////////////// Comment or delete the following three lines in implementation ////////////////
-				RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
+				//RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
 				RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
-				RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %.2f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, gain_new, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
+				//RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %.2f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, gain_new, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
+				RCLCPP_INFO(get_logger(), "max gamma: %f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
 
 				///////////////////////////////////////////////////////////////////
 				// Then call the function to determine what exposure time and gain to update
@@ -241,6 +275,8 @@ namespace exp_node
 		else { // keeping the if-else statement here is because this makes easier to add delay
 			check_rate = true;
 		}
+
+		//usleep(300000);
 	}
 
 	double ExpNode::image_gradient_gamma(cv::Mat &src_img, int j) {
@@ -508,31 +544,31 @@ double ExpNode::findRoots1(double a[3], double check)
     // Calculate the critical point (where derivative = 0)
     derivative_root = -a[1] / (2.0 * a[0]);
     
-    RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
+    //RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
     
     // Check if the root is within range (0.5, 2.0)
-    if ((derivative_root < 2.0) && (derivative_root > 0.5))
+    //if ((derivative_root < 2.0) && (derivative_root > 0.5))
     {
         // Evaluate the polynomial at this point
         met_temp = a[0] * derivative_root * derivative_root + 
                    a[1] * derivative_root + 
                    a[2];
         
-        RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
+        //RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
         
         // Check if this gives a better metric than current
-        if (met_temp > check)
+        //if (met_temp > check)
         {
             opt_gamma = derivative_root;
-            RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
-                       met_temp, opt_gamma);
+            //RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
+            //           met_temp, opt_gamma);
         }
     }
-    else
-    {
-        RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", 
-                   derivative_root);
-    }
+    // else
+    // {
+    //     RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", 
+    //                derivative_root);
+    // }
     
     return opt_gamma;
 } // END of function findRoots1()
