@@ -22,7 +22,7 @@ namespace exp_node
 		get_parameter("image_topic", image_topic);
     	RCLCPP_INFO(get_logger(), "image topic: %s", image_topic.c_str());
 
-		declare_parameter<int>("lower_shutter_speed_limit", 10000);
+		declare_parameter<int>("lower_shutter_speed_limit", 1000);
 		int lower_shutter_limit_param;
 		get_parameter("lower_shutter_speed_limit", lower_shutter_limit_param);
 		lower_shutter_limit = (double)lower_shutter_limit_param/1000000.0;
@@ -35,11 +35,11 @@ namespace exp_node
 		upper_shutter_limit = (double)upper_shutter_limit_param/1000000.0;
     	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %.0f", upper_shutter_limit);
 
-		declare_parameter<double>("kp", 0.4);
+		declare_parameter<double>("kp", 0.02);
 		get_parameter("kp", kp);
     	RCLCPP_INFO(get_logger(), "kp param: %.2f", kp);
 
-		declare_parameter<int>("initial_shutter_speed", 20000);
+		declare_parameter<int>("initial_shutter_speed", 5000);
 		int initial_shutter_speed;
 		get_parameter("initial_shutter_speed", initial_shutter_speed);
 		shutter_cur = (double)initial_shutter_speed/1000000.0;	// from microseconds to seconds
@@ -157,173 +157,184 @@ namespace exp_node
 			return;
 		}
 
-		if (check_rate) {
+		try {
+			check_rate = false;
+
+			cv::Mat image_capture;
 			try {
-				check_rate = false;
+				image_capture = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
+			} catch (cv_bridge::Exception& e) {
+				RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+			}
 
-				cv::Mat image_capture;
-				try {
-					image_capture = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
-				} catch (cv_bridge::Exception& e) {
-					RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+			cv::Mat image_current;
+			//cv::Size size(512,612); // may want to try size(408,342) if speed is limited
+			cv::Size size(342,408);
+			cv::resize(image_capture, image_current, size);
+			//image_capture = image_current;
+
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////
+			// Call the image processing funciton here (i.e. the gamma processing), returning a float point gamma value
+			///////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+			// calculate the upper limit of shutter speed [unit:microsecond]
+			// if ((1.0/frame_rate_req)*1000000.0 > upper_shutter_limit_param){        
+			// 	upper_shutter_limit = upper_shutter_limit_param;
+			// }
+			// else{
+			// 	upper_shutter_limit = round(1000000.0/frame_rate_req);
+			// }
+
+			// loop to call image_gradient_gamma function to obtain image gradient of each gamma
+			// manually adjust the possible gamma values and the number of gamma to use
+			for (int i = 0; i < GAMMAS_COUNT; ++i){
+				metric[i]= image_gradient_gamma(image_current, i)/1000000; // passing the corresponding index
+				//RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
+			}
+							
+			// loop to find out the index that correspond to the optimum/maximum gamma value
+			double temp = -1.0;				
+			for(int i = 0; i < GAMMAS_COUNT; i++){
+				if (metric[i] > temp){
+					temp = metric[i];
+					gamma_index = i;
 				}
-
-				cv::Mat image_current;
-				//cv::Size size(512,612); // may want to try size(408,342) if speed is limited
-				cv::Size size(342,408);
-				cv::resize(image_capture, image_current, size);
-				//image_capture = image_current;
-
-				///////////////////////////////////////////////////////////////////////////////////////////////////////////
-				// Call the image processing funciton here (i.e. the gamma processing), returning a float point gamma value
-				///////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-				// calculate the upper limit of shutter speed [unit:microsecond]
-				// if ((1.0/frame_rate_req)*1000000.0 > upper_shutter_limit_param){        
-				// 	upper_shutter_limit = upper_shutter_limit_param;
-				// }
-				// else{
-				// 	upper_shutter_limit = round(1000000.0/frame_rate_req);
-				// }
-
-				// loop to call image_gradient_gamma function to obtain image gradient of each gamma
-				// manually adjust the possible gamma values and the number of gamma to use
-				for (int i = 0; i < GAMMAS_COUNT; ++i){
-					metric[i]= image_gradient_gamma(image_current, i)/1000000; // passing the corresponding index
-					//RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
-				}
-                                
-				// loop to find out the index that correspond to the optimum/maximum gamma value
-				double temp = -1.0;				
-				for(int i = 0; i < GAMMAS_COUNT; i++){
-					if (metric[i] > temp){
-						temp = metric[i];
-						gamma_index = i;
-					}
-				}
+			}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////  Curve Fitting  ///////////////////////////////////////////////
 
-				// Call the curve fitting function to find out coefficient
-				double * coeff_curve;
-				coeff_curve = curveFit(gamma, metric);
+			// Call the curve fitting function to find out coefficient
+			double * coeff_curve;
+			coeff_curve = curveFit(gamma, metric);
 
-				//gnulot(coeff_curve);
-	
-				double coeff[POLYNOME_DEGREE+1];
-				for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
-      					
-					coeff[i] = *(coeff_curve+i);
-					//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
-   				}
+			//gnulot(coeff_curve);
 
-				max_gamma = findRoots1(coeff, metric[gamma_index]); // calling function findRoots1 to find opt_gamma
-				//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
-				
-				double metric_check = 0.0;
-				for (int i=0; i < POLYNOME_DEGREE+1; i++) {
-					metric_check = metric_check + coeff[i] * pow(max_gamma, POLYNOME_DEGREE+1-i);
-				}				
-				//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
+			double coeff[POLYNOME_DEGREE+1];
+			for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
+					
+				coeff[i] = *(coeff_curve+i);
+				//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
+			}
 
-				if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	{
-                    // find out the optimum gamma value associated with highest image gradient
-					max_gamma = gamma[gamma_index];
-				}
-				else if (metric[gamma_index] > metric_check) {
-					max_gamma = gamma[gamma_index];
-				}
+			max_gamma = findRoots1(coeff, metric[gamma_index]); // calling function findRoots1 to find opt_gamma
+			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
+			
+			double metric_check = 0.0;
+			for (int i=0; i < POLYNOME_DEGREE+1; i++) {
+				metric_check = metric_check + coeff[i] * pow(max_gamma, POLYNOME_DEGREE-i);
+			}				
+			//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
+
+			if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	{
+				// find out the optimum gamma value associated with highest image gradient
+				max_gamma = gamma[gamma_index];
+			}
+			else if (metric[gamma_index] > metric_check) {
+				max_gamma = gamma[gamma_index];
+			}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-				// alpha value refers to Shim's 2014 paper
-				// if (max_gamma < 1)
-                //     //{alpha = 0.5;} //original paper used 0.5
-				// 	{alpha = 1.0;}
-                // if (max_gamma >= 1)
-				// 	{alpha = 1.0;}
+			// alpha value refers to Shim's 2014 paper
+			// if (max_gamma < 1)
+			//     //{alpha = 0.5;} //original paper used 0.5
+			// 	{alpha = 1.0;}
+			// if (max_gamma >= 1)
+			// 	{alpha = 1.0;}
 
-				alpha = 1.0;
-				
-				// TODO: obtain current shutter speed and gain from camera driver
-				//ros::param::get("/blackfly/spinnaker_camera_nodelet/exposure_time", shutter_cur); // get the current shutter
-				//ros::param::get("/blackfly/spinnaker_camera_nodelet/gain", gain_cur); // get the current gain
-				//ros::param::get(exp_param_call, shutter_cur); // get the current shutter
-				//ros::param::get(gain_param_call, gain_cur); // get the current gain
-				
-				//shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
-				expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8
-				//RCLCPP_INFO(get_logger(), "============================================");
-				//RCLCPP_INFO(get_logger(), "shutter_cur: %f", shutter_cur);
-				//RCLCPP_INFO(get_logger(), "expCur: %f", expCur);		
-
-				// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
-				R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
-				expNew = (1 + alpha * kp * (R-1)) * expCur;
- 	
-				// Shim's 2014 version of update function
-				// expNew = (1+ kp * alpha * (1-max_gamma)) * expCur;
-				//RCLCPP_INFO(get_logger(), "expNew: %f", expNew); 
+			alpha = 1.0;
 			
-				shutter_new = (7.84) * 1/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
-				//RCLCPP_INFO(get_logger(), "shutter_new: %f", shutter_new);
-				//RCLCPP_INFO(get_logger(), "============================================");
-				
-				//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
-
-				//shutter_new = shutter_cur + 1000.0*(gamma_index - 3)/1000000.0;
-
-				if (shutter_new > upper_shutter_limit) {
-					gain_flag = true;
-					shutter_new = upper_shutter_limit;
-				}
-                else if (shutter_new < lower_shutter_limit) {
-					gain_flag = true;
-					shutter_new = lower_shutter_limit;
-				}
-                else {
-					gain_flag = false;
-				}
-
-                // if (gain_flag == true) {
-				// 	gain_new = 6.0 * (expCur - expNew) + gain_cur;
+			// TODO: obtain current shutter speed and gain from camera driver
+			//ros::param::get("/blackfly/spinnaker_camera_nodelet/exposure_time", shutter_cur); // get the current shutter
+			//ros::param::get("/blackfly/spinnaker_camera_nodelet/gain", gain_cur); // get the current gain
+			//ros::param::get(exp_param_call, shutter_cur); // get the current shutter
+			//ros::param::get(gain_param_call, gain_cur); // get the current gain
 			
-				// 	if (gain_new > 30)
-				// 		{gain_new = 30;}
-				// 	else if (gain_new < -10)
-				// 		{gain_new = -10;}
-				// 	gain_flag = false;                    		
-				// }
-                // else if  (shutter_new < upper_shutter_limit && shutter_new > lower_shutter_limit) {
-				// 	gain_new = 0.0;
-				// 	//gain_flag = false;
-				// 	//gain_cur=gain_new;
-				// }
+			//shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
+			expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8 (7.84 = 2.8^2)
+			//RCLCPP_INFO(get_logger(), "============================================");
+			//RCLCPP_INFO(get_logger(), "shutter_cur: %f", shutter_cur);
+			//RCLCPP_INFO(get_logger(), "expCur: %f", expCur);		
 
-				///////////////////////////// Comment or delete the following three lines in implementation ////////////////
-				//RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
-				RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
-				//RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %.2f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, gain_new, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
-				RCLCPP_INFO(get_logger(), "max gamma: %f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
+			// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
+			// R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
+			// R = d * pow((1-max_gamma), 3) + 1;
+			// if(max_gamma >= 1.0) R = -d * pow((max_gamma - 1), 2) + 1;
+			// else 				 R =  d * pow((max_gamma - 1), 2) + 1;
+			if(max_gamma >= 1.0) R = -pow((max_gamma - 1), 2) + 1;
+			else 				 R =  pow((max_gamma - 1), 2) + 1;
+			expNew = (1 + alpha * kp * (R-1)) * expCur;
 
-				///////////////////////////////////////////////////////////////////
-				// Then call the function to determine what exposure time and gain to update
-                ///////////////////////////////////////////////////////////////////
+			// Shim's 2014 version of update function
+			// expNew = (1+ kp * alpha * (1-max_gamma)) * expCur;
+			//RCLCPP_INFO(get_logger(), "expNew: %f", expNew); 
+		
+			shutter_new = (7.84) * 1/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
+			//RCLCPP_INFO(get_logger(), "shutter_new: %f", shutter_new);
+			//RCLCPP_INFO(get_logger(), "============================================");
+			
+			//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
 
-                //ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
-				ChangeParam(shutter_new, 0.0); // may input the gain and exposure time update
-				shutter_cur = shutter_new;
+			//shutter_new = shutter_cur + 1000.0*(gamma_index - 3)/1000000.0;
 
-				RCLCPP_INFO(get_logger(), "true_best_shutter_speed/shutter_cur: %f", (true_best_shutter_speed/1000000.0)/shutter_cur);
+			// double max_jump = 0.01;
+
+			// if((shutter_new/shutter_cur - 1.0) > max_jump){
+			// 	shutter_new = (1.0 + max_jump) * shutter_cur;
+			// }
+			// if((shutter_cur/shutter_new - 1.0) > max_jump){
+			// 	shutter_new = (1.0 - max_jump) * shutter_cur;
+			// }
+
+			if (shutter_new > upper_shutter_limit) {
+				gain_flag = true;
+				shutter_new = upper_shutter_limit;
 			}
-			catch (cv_bridge::Exception& e) {
-				RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
+			else if (shutter_new < lower_shutter_limit) {
+				gain_flag = true;
+				shutter_new = lower_shutter_limit;
 			}
+			else {
+				gain_flag = false;
+			}
+
+			// we don't care about gain now
+			// if (gain_flag == true) {
+			// 	gain_new = 6.0 * (expCur - expNew) + gain_cur;
+		
+			// 	if (gain_new > 30)
+			// 		{gain_new = 30;}
+			// 	else if (gain_new < -10)
+			// 		{gain_new = -10;}
+			// 	gain_flag = false;                    		
+			// }
+			// else if  (shutter_new < upper_shutter_limit && shutter_new > lower_shutter_limit) {
+			// 	gain_new = 0.0;
+			// 	//gain_flag = false;
+			// 	//gain_cur=gain_new;
+			// }
+
+			///////////////////////////// Comment or delete the following three lines in implementation ////////////////
+			//RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
+			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
+			//RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %.2f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, gain_new, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
+			RCLCPP_INFO(get_logger(), "max gamma: %f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
+
+			///////////////////////////////////////////////////////////////////
+			// Then call the function to determine what exposure time and gain to update
+			///////////////////////////////////////////////////////////////////
+
+			//ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
+			ChangeParam(shutter_new, 0.0); // may input the gain and exposure time update
+			shutter_cur = shutter_new;
+
+			RCLCPP_INFO(get_logger(), "true_best_shutter_speed/shutter_cur: %f", (true_best_shutter_speed/1000000.0)/shutter_cur);
 		}
-		else { // keeping the if-else statement here is because this makes easier to add delay
-			check_rate = true;
+		catch (cv_bridge::Exception& e) {
+			RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
 		}
+		
 
 		//usleep(300000);
 	}
@@ -337,7 +348,9 @@ namespace exp_node
 		cv::Mat abs_grad_x, abs_grad_y, dst_img;
 		cv::Mat weight_ori = cv::Mat::ones(res.rows,res.cols,CV_64FC1);
 
-		// Using the corresponding index to find out the correct lookuptable to use
+		// Using the corresponding index to find out the correct lookuptable to use.
+		// This first lookup table transformation performs normalization of the image to [0,1]
+		// interval and changes the image's gamma.
 		if (j == 0){
 			cv::LUT(src_img, lookUpTable_01, res);
 		}
@@ -384,6 +397,18 @@ namespace exp_node
 		
 		// Method 2: Shim's 2014 gradient metric function
 		// Using the metric equation given in Shim's 2014 paper
+		/* This second lookup table mapping streghtens smaller gradients and keeps the higher gradients as they are.
+		   For example, if signa = 15 and lamda = 1000:
+			- gradients with value smaller than 64 are thrown away
+			- some example gradients value mapping:
+				- 16 -> 64
+				- 30 -> 178
+				- 50 -> 201
+				- 100 -> 226
+				- 200 -> 247
+				- 250 -> 254
+				- 255 -> 255
+		*/ 
 		cv::LUT(dst_img, lookUpTable_metric, res);
 		res.convertTo(res, CV_64FC1);
 		
@@ -501,18 +526,18 @@ namespace exp_node
 				p = lookUpTable_19.ptr();
 			}
 			
-    			for( int i = 0; i < 256; ++i)
-    			{  p[i] = cv::saturate_cast<uchar>(pow(i / 255.0, 1/gamma[j]) * 255.0);
-       
-       			// The following if statement to create a lookup table based on the activation threshold value in Shim's 2014 paper
+			for( int i = 0; i < 256; ++i) {
+				p[i] = cv::saturate_cast<uchar>(pow(i / 255.0, 1/gamma[j]) * 255.0);
+	
+				// The following if statement to create a lookup table based on the activation threshold value in Shim's 2014 paper
 				if (i >= sigma){
 					q[i] = 255 * ( ( log10( lamda * ((i-sigma)/255.0) + 1) ) / ( log10( lamda * ((255.0-sigma)/255.0) + 1) ) );
-	    			}
+				}
 				else{
 					q[i] = 0;
-					}
-     
-				} // end of for loop with index i
+				}
+	
+			} // end of for loop with index i
 
 		}// end of for loop with index j
 
@@ -573,55 +598,120 @@ namespace exp_node
 	// 	return opt_gamma;
 	// } // END of function of findRoots1()
 
+// double ExpNode::findRoots1(double a[3], double check)
+// {
+// 	double lowest_gamma = gamma[0];
+// 	double highest_gamma = gamma[GAMMAS_COUNT-1];
+// 	double neutral_gamma = 1.0;
+
+//     // double opt_gamma = 997.0, met_temp;
+// 	double opt_gamma = 1.0, met_temp;
+    
+//     // Derivative of quadratic ax^2 + bx + c is: 2ax + b
+//     // Setting derivative = 0: 2ax + b = 0
+//     // Root: x = -b/(2a)
+    
+//     double derivative_root;
+    
+//     // Check if we have a valid quadratic (a[0] != 0)
+//     if (std::abs(a[0]) < 1e-10)
+//     {
+//         RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid quadratic");
+//         return opt_gamma;
+//     }
+
+// 	// If the polynomial is convex, we are way off from the optimal gamma.
+// 	// We need to just pick the gamma with the largest metric.
+// 	double derrivative_at_gamma_1 = 2*a[0] + a[1];
+// 	RCLCPP_INFO(get_logger(), "derrivative_at_gamma_1: %f", derrivative_at_gamma_1);
+// 	if (a[0] > 0) {
+// 		// First, determine if the function is increasing or decreasing
+// 		RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX!");
+// 		// we have to multipoly it by the derrivative itself because it would oscillate arround the peak
+// 		// if(derrivative_at_gamma_1 >= 0) return highest_gamma;
+// 		// if(derrivative_at_gamma_1 < 0) return lowest_gamma;
+// 		return 1.0;
+// 	}
+    
+//     // Calculate the critical point (where derivative = 0)
+//     derivative_root = -a[1] / (2.0 * a[0]);
+    
+//     //RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
+    
+//     // Check if the root is within range (0.5, 2.0)
+//     if ((derivative_root <= highest_gamma) && (derivative_root >= lowest_gamma))
+//     {
+//         // Evaluate the polynomial at this point
+//         met_temp = a[0] * derivative_root * derivative_root + 
+//                    a[1] * derivative_root + 
+//                    a[2];
+        
+//         //RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
+        
+//         // Check if this gives a better metric than current
+//         //if (met_temp > check)	// this can cause some jumping of the opt_gamma value; we rather choose little bit suboptimal, but stable value
+//         {
+//             opt_gamma = derivative_root;
+//             //RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
+//             //           met_temp, opt_gamma);
+//         }
+//     }
+//     else
+//     {
+//         RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", derivative_root);
+// 		// if(derivative_root >= highest_gamma) opt_gamma = highest_gamma;
+// 		// if(derivative_root <= lowest_gamma) opt_gamma = lowest_gamma;
+//     }
+    
+//     return opt_gamma;
+// } // END of function findRoots1()
+
 double ExpNode::findRoots1(double a[3], double check)
 {
-    double opt_gamma = 997.0, met_temp;
-    
-    // Derivative of quadratic ax^2 + bx + c is: 2ax + b
-    // Setting derivative = 0: 2ax + b = 0
-    // Root: x = -b/(2a)
-    
-    double derivative_root;
+    double lowest_gamma = gamma[0];
+    double highest_gamma = gamma[GAMMAS_COUNT-1];
+    double opt_gamma = 1.0;
     
     // Check if we have a valid quadratic (a[0] != 0)
     if (std::abs(a[0]) < 1e-10)
     {
         RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid quadratic");
-        return opt_gamma;
+        return 1.0;  // Return neutral
+    }
+
+    double derrivative_at_gamma_1 = 2*a[0] + a[1];
+    
+    // If the polynomial is convex, the curve fit is poor for finding a maximum
+    // Use a SMALL correction based on derivative direction instead of jumping to extremes
+    if (a[0] > 0) {
+        RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
+        // Small step in the direction indicated by derivative, not extreme values
+        if (derrivative_at_gamma_1 >= 0) 
+            return 1.05;  // Small step toward brighter (was 1.9!)
+        else 
+            return 0.95;  // Small step toward darker (was 0.526!)
     }
     
     // Calculate the critical point (where derivative = 0)
-    derivative_root = -a[1] / (2.0 * a[0]);
+    double derivative_root = -a[1] / (2.0 * a[0]);
     
-    //RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
-    
-    // Check if the root is within range (0.5, 2.0)
-    //if ((derivative_root < 2.0) && (derivative_root > 0.5))
+    // Check if the root is within valid range
+    if ((derivative_root <= highest_gamma) && (derivative_root >= lowest_gamma))
     {
-        // Evaluate the polynomial at this point
-        met_temp = a[0] * derivative_root * derivative_root + 
-                   a[1] * derivative_root + 
-                   a[2];
-        
-        //RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
-        
-        // Check if this gives a better metric than current
-        //if (met_temp > check)
-        {
-            opt_gamma = derivative_root;
-            //RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
-            //           met_temp, opt_gamma);
-        }
+        opt_gamma = derivative_root;
     }
-    // else
-    // {
-    //     RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", 
-    //                derivative_root);
-    // }
+    else
+    {
+        RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", derivative_root);
+        // Instead of returning extremes, return a small correction
+        if (derivative_root > highest_gamma)
+            return 1.05;  // Small step toward brighter
+        else
+            return 0.95;  // Small step toward darker
+    }
     
     return opt_gamma;
-} // END of function findRoots1()
-
+}
 
 // double * ExpNode::curveFit (double x[7], double y[7])
 // { static double coff[6];
