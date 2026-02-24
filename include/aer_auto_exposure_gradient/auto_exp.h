@@ -35,6 +35,8 @@
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/float32.hpp>
 
+#include <plotter_ros2/plotter.hpp>
+
 //#include <aer_auto_exposure_gradient/Dehaze.h>
 
 #define GAMMAS_COUNT 7
@@ -90,11 +92,11 @@ class ExpNode : public rclcpp::Node {
   std::shared_ptr<rclcpp::Time> callback_start_time;
   std::shared_ptr<rclcpp::Time> zeroing_duration;
 
-  FILE* gnuplotPipe;
-
   int test_shutter_speed;
   int true_best_shutter_speed;
   double metric_tmp;
+
+  std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
 };
 
 }

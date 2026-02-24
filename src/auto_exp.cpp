@@ -78,36 +78,16 @@ namespace exp_node
     	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
 
-		gnuplotPipe = popen("gnuplot -persist", "w");
-
 		test_shutter_speed = lower_shutter_limit;
 		metric_tmp = 0;
-	}
 
-	void ExpNode::gnulot(double * coeff_curve){
-		// Plot both the data points and the fitted curve
-		fprintf(gnuplotPipe, "plot '-' with points pointtype 3 pointsize 1.5 title 'Data', ");
-		fprintf(gnuplotPipe, "'-' with lines linewidth 2 title 'Fitted Parabola'\n");
-		
-		// Send the data points (gamma/metric)
-		for (int i = 0; i < GAMMAS_COUNT; ++i){
-			fprintf(gnuplotPipe, "%f %f\n", gamma[i], metric[i]);
-		}
-		fprintf(gnuplotPipe, "e\n");
-		
-		// Send the parabola curve points
-		double x_start = gamma[0];
-		double x_end = gamma[GAMMAS_COUNT - 1];
-		double step = (x_end - x_start) / (10.0 * GAMMAS_COUNT);
-		
-		for (double x = x_start; x <= x_end; x += step){
-			double y = coeff_curve[0] * x * x + coeff_curve[1] * x + coeff_curve[2];
-			fprintf(gnuplotPipe, "%f %f\n", x, y);
-		}
-		fprintf(gnuplotPipe, "e\n");
-		
-		fflush(gnuplotPipe);
-		usleep(50000);  // 50ms delay
+		plotter_gamma = std::make_unique<plotter_ros2::Plotter>(
+			node_ptr,   // Pass node pointer
+			"plot_example",             // Plot name (also topic name with /)
+			800,                        // Width
+			600,                        // Height
+			cv::Scalar(255, 255, 255)  // Background color (white)
+		);
 	}
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
@@ -208,7 +188,49 @@ namespace exp_node
 			double * coeff_curve;
 			coeff_curve = curveFit(gamma, metric);
 
-			//gnulot(coeff_curve);
+			plotter_gamma->clear();
+			plotter_gamma->plot(
+				gamma,               // X data pointer
+				metric,               // Y data pointer
+				GAMMAS_COUNT,              // Number of points
+				'*',                    // Marker type: '-' for line, '*' for asterisk
+				2,                      // Line width in pixels
+				cv::Scalar(255, 0, 0)  // Color (B, G, R) - blue
+				);
+
+			const int POINTS_COUNT = 10 * GAMMAS_COUNT;
+			std::unique_ptr<double[]> x = std::make_unique<double[]>(POINTS_COUNT);
+			std::unique_ptr<double[]> y = std::make_unique<double[]>(POINTS_COUNT);
+
+			// Calculate the step size for interpolation
+			double x_min = gamma[0];
+			double x_max = gamma[GAMMAS_COUNT - 1];
+			double step = (x_max - x_min) / (POINTS_COUNT - 1);
+
+			// Generate x values and compute corresponding y values using parabola coefficients
+			for (int i = 0; i < POINTS_COUNT; i++) {
+				// Generate x value
+				x[i] = x_min + i * step;
+				
+				// Compute y value using parabola formula: y = ax^2 + bx + c
+				double a = coeff_curve[0];
+				double b = coeff_curve[1];
+				double c = coeff_curve[2];
+				
+				y[i] = a * x[i] * x[i] + b * x[i] + c;
+			}
+
+			plotter_gamma->plot(
+				x.get(),               // X data pointer
+				y.get(),               // Y data pointer
+				POINTS_COUNT,              // Number of points
+				'-',                    // Marker type: '-' for line, '*' for asterisk
+				2,                      // Line width in pixels
+				cv::Scalar(0, 0, 255)  // Color (B, G, R) - blue
+				);
+
+
+			plotter_gamma->publish();
 
 			double coeff[POLYNOME_DEGREE+1];
 			for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
@@ -251,32 +273,40 @@ namespace exp_node
 			//ros::param::get(exp_param_call, shutter_cur); // get the current shutter
 			//ros::param::get(gain_param_call, gain_cur); // get the current gain
 			
-			//shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
-			expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8 (7.84 = 2.8^2)
-			//RCLCPP_INFO(get_logger(), "============================================");
-			//RCLCPP_INFO(get_logger(), "shutter_cur: %f", shutter_cur);
-			//RCLCPP_INFO(get_logger(), "expCur: %f", expCur);		
+			/* ========================== original algorithm ========================== */
+			// //shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
+			// expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8 (7.84 = 2.8^2)
+			// //RCLCPP_INFO(get_logger(), "============================================");
+			// //RCLCPP_INFO(get_logger(), "shutter_cur: %f", shutter_cur);
+			// //RCLCPP_INFO(get_logger(), "expCur: %f", expCur);		
 
-			// This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
-			// R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
-			// R = d * pow((1-max_gamma), 3) + 1;
-			// if(max_gamma >= 1.0) R = -d * pow((max_gamma - 1), 2) + 1;
-			// else 				 R =  d * pow((max_gamma - 1), 2) + 1;
-			if(max_gamma >= 1.0) R = -pow((max_gamma - 1), 2) + 1;
-			else 				 R =  pow((max_gamma - 1), 2) + 1;
-			expNew = (1 + alpha * kp * (R-1)) * expCur;
+			// // This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
+			// // R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
+			// // R = d * pow((1-max_gamma), 3) + 1;
+			// // if(max_gamma >= 1.0) R = -d * pow((max_gamma - 1), 2) + 1;
+			// // else 				 R =  d * pow((max_gamma - 1), 2) + 1;
+			// double gamma_nudge = 0.0;
+			// if(max_gamma >= 1.0) R = -pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+			// else 				 R =  pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+			// expNew = (1 + alpha * kp * (R-1)) * expCur;
+			// RCLCPP_INFO(get_logger(), "R: %f", R);
 
-			// Shim's 2014 version of update function
-			// expNew = (1+ kp * alpha * (1-max_gamma)) * expCur;
-			//RCLCPP_INFO(get_logger(), "expNew: %f", expNew); 
+			// // Shim's 2014 version of update function
+			// // expNew = (1+ kp * alpha * (1-max_gamma)) * expCur;
+			// //RCLCPP_INFO(get_logger(), "expNew: %f", expNew); 
 		
-			shutter_new = (7.84) * 1/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
-			//RCLCPP_INFO(get_logger(), "shutter_new: %f", shutter_new);
-			//RCLCPP_INFO(get_logger(), "============================================");
+			// shutter_new = (7.84) * 1/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
+			// //RCLCPP_INFO(get_logger(), "shutter_new: %f", shutter_new);
+			// //RCLCPP_INFO(get_logger(), "============================================");
+			/* ======================================================================== */
+
+			// double D = 2*coeff_curve[0] + coeff_curve[1];
+			// RCLCPP_INFO(get_logger(), "derivative: %f", D);
+			// shutter_new = shutter_cur + 0.0001*D;
 			
 			//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
 
-			//shutter_new = shutter_cur + 1000.0*(gamma_index - 3)/1000000.0;
+			shutter_new = shutter_cur + 0.5*1000.0*(gamma_index - 3)/1000000.0;
 
 			// double max_jump = 0.01;
 

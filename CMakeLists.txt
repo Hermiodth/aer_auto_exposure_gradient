@@ -18,6 +18,7 @@ set(DEPENDENCIES
   image_transport
   sensor_msgs
   std_msgs
+  plotter_ros2
 )
 
 foreach(DEP IN LISTS DEPENDENCIES)
