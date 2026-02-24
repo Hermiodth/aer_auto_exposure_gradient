@@ -19,12 +19,19 @@ set(DEPENDENCIES
   image_transport
   sensor_msgs
   std_msgs
-  plotter_ros2
 )
 
 foreach(DEP IN LISTS DEPENDENCIES)
   find_package(${DEP} REQUIRED)
 endforeach()
+
+find_package(plotter_ros2 QUIET)
+if(plotter_ros2_FOUND)
+  message(STATUS "plotter_ros2 found — building with plotter support")
+  list(APPEND DEPENDENCIES plotter_ros2)
+else()
+  message(STATUS "plotter_ros2 not found — building without plotter support")
+endif()
 
 include_directories(
   include
@@ -38,6 +45,9 @@ include_directories(
 add_library(${PROJECT_NAME}_component SHARED src/auto_exp.cpp)
 target_link_libraries(${PROJECT_NAME}_component ${OpenCV_LIBRARIES})
 ament_target_dependencies(${PROJECT_NAME}_component ${DEPENDENCIES})
+if(plotter_ros2_FOUND)
+  target_compile_definitions(${PROJECT_NAME}_component PRIVATE WITH_PLOTTER)
+endif()
 # install(TARGETS ${PROJECT_NAME}_component DESTINATION lib/${PROJECT_NAME})
 
 rclcpp_components_register_node(

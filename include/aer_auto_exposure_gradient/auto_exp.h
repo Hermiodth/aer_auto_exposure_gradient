@@ -35,7 +35,9 @@
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/float32.hpp>
 
+#ifdef WITH_PLOTTER
 #include <plotter_ros2/plotter.hpp>
+#endif
 
 //#include <aer_auto_exposure_gradient/Dehaze.h>
 
@@ -99,7 +101,10 @@ class ExpNode : public rclcpp::Node {
   int true_best_shutter_speed;
   double metric_tmp;
 
+#ifdef WITH_PLOTTER
+  bool enable_plotter;
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
+#endif
 };
 
 }

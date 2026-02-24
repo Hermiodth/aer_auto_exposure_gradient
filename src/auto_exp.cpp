@@ -81,13 +81,19 @@ namespace exp_node
 		test_shutter_speed = lower_shutter_limit;
 		metric_tmp = 0;
 
-		plotter_gamma = std::make_unique<plotter_ros2::Plotter>(
-			node_ptr,   // Pass node pointer
-			"plot_example",             // Plot name (also topic name with /)
-			800,                        // Width
-			600,                        // Height
-			cv::Scalar(255, 255, 255)  // Background color (white)
-		);
+#ifdef WITH_PLOTTER
+		declare_parameter<bool>("enable_plotter", true);
+		get_parameter("enable_plotter", enable_plotter);
+		if (enable_plotter) {
+			plotter_gamma = std::make_shared<plotter_ros2::Plotter>(
+				node_ptr,
+				"plot_example",
+				800,
+				600,
+				cv::Scalar(255, 255, 255)
+			);
+		}
+#endif
 	}
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
@@ -188,49 +194,46 @@ namespace exp_node
 			double * coeff_curve;
 			coeff_curve = curveFit(gamma, metric);
 
+	#ifdef WITH_PLOTTER
+		if (enable_plotter) {
 			plotter_gamma->clear();
 			plotter_gamma->plot(
-				gamma,               // X data pointer
-				metric,               // Y data pointer
-				GAMMAS_COUNT,              // Number of points
-				'*',                    // Marker type: '-' for line, '*' for asterisk
-				2,                      // Line width in pixels
-				cv::Scalar(255, 0, 0)  // Color (B, G, R) - blue
+				gamma,
+				metric,
+				GAMMAS_COUNT,
+				'*',
+				2,
+				cv::Scalar(255, 0, 0)
 				);
 
 			const int POINTS_COUNT = 10 * GAMMAS_COUNT;
 			std::unique_ptr<double[]> x = std::make_unique<double[]>(POINTS_COUNT);
 			std::unique_ptr<double[]> y = std::make_unique<double[]>(POINTS_COUNT);
 
-			// Calculate the step size for interpolation
 			double x_min = gamma[0];
 			double x_max = gamma[GAMMAS_COUNT - 1];
 			double step = (x_max - x_min) / (POINTS_COUNT - 1);
 
-			// Generate x values and compute corresponding y values using parabola coefficients
 			for (int i = 0; i < POINTS_COUNT; i++) {
-				// Generate x value
 				x[i] = x_min + i * step;
-				
-				// Compute y value using parabola formula: y = ax^2 + bx + c
 				double a = coeff_curve[0];
 				double b = coeff_curve[1];
 				double c = coeff_curve[2];
-				
 				y[i] = a * x[i] * x[i] + b * x[i] + c;
 			}
 
 			plotter_gamma->plot(
-				x.get(),               // X data pointer
-				y.get(),               // Y data pointer
-				POINTS_COUNT,              // Number of points
-				'-',                    // Marker type: '-' for line, '*' for asterisk
-				2,                      // Line width in pixels
-				cv::Scalar(0, 0, 255)  // Color (B, G, R) - blue
+				x.get(),
+				y.get(),
+				POINTS_COUNT,
+				'-',
+				2,
+				cv::Scalar(0, 0, 255)
 				);
 
-
 			plotter_gamma->publish();
+		}
+#endif
 
 			double coeff[POLYNOME_DEGREE+1];
 			for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
