@@ -808,11 +808,7 @@ double * ExpNode::curveFit(double x[7], double y[7])
     return coff;
 } // END of function curveFit()
 
-
-
-
-    
-
 } //END OF THE WHOLE NAMESPACE
 
-
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(exp_node::ExpNode)

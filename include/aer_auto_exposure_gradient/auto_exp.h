@@ -47,7 +47,10 @@ namespace exp_node {
 class ExpNode : public rclcpp::Node {
  public:
 
-  ExpNode() : rclcpp::Node("exp_node"), callback_start_time(nullptr), it_(nullptr) {}
+  ExpNode(const rclcpp::NodeOptions & options) : rclcpp::Node("exp_node", options), callback_start_time(nullptr), it_(nullptr) {
+    auto node_ptr = std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node*){});
+    init(node_ptr);
+  }
   void init(std::shared_ptr<rclcpp::Node> node_ptr);
 
  private:

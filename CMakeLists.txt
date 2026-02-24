@@ -14,6 +14,7 @@ find_package(Eigen3 REQUIRED)
 
 set(DEPENDENCIES
   rclcpp
+  rclcpp_components
   cv_bridge
   image_transport
   sensor_msgs
@@ -34,19 +35,33 @@ include_directories(
 #   ${catkin_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${Eigen3_INCLUDE_DIRS}
 # )
 
-add_library(${PROJECT_NAME} src/auto_exp.cpp)
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBRARIES})
-ament_target_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
-install(TARGETS ${PROJECT_NAME} DESTINATION lib/${PROJECT_NAME})
+add_library(${PROJECT_NAME}_component SHARED src/auto_exp.cpp)
+target_link_libraries(${PROJECT_NAME}_component ${OpenCV_LIBRARIES})
+ament_target_dependencies(${PROJECT_NAME}_component ${DEPENDENCIES})
+# install(TARGETS ${PROJECT_NAME}_component DESTINATION lib/${PROJECT_NAME})
 
-add_executable(exp_node1 src/exp_node1.cpp)
-target_link_libraries(exp_node1  ${PROJECT_NAME})
-#add_dependencies(exp_node1 ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
-ament_target_dependencies(exp_node1 ${DEPENDENCIES})
-install(TARGETS exp_node1 DESTINATION lib/${PROJECT_NAME})
+rclcpp_components_register_node(
+    ${PROJECT_NAME}_component
+    PLUGIN "exp_node::ExpNode"
+    EXECUTABLE ${PROJECT_NAME}
+)
 
-install(DIRECTORY include/${PROJECT_NAME}/
-        DESTINATION include/${PROJECT_NAME})
+ament_export_targets(export_${PROJECT_NAME}_component)
+install(TARGETS ${PROJECT_NAME}_component
+        EXPORT export_${PROJECT_NAME}_component
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+)
+
+# add_executable(exp_node1 src/exp_node1.cpp)
+# target_link_libraries(exp_node1  ${PROJECT_NAME})
+# #add_dependencies(exp_node1 ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
+# ament_target_dependencies(exp_node1 ${DEPENDENCIES})
+# install(TARGETS exp_node1 DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY include/${PROJECT_NAME}/ DESTINATION include/${PROJECT_NAME})
+install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 
 ament_export_dependencies(${DEPENDENCIES})
 ament_export_include_directories(include)
