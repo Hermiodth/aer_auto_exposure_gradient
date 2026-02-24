@@ -79,6 +79,8 @@ class ExpNode : public rclcpp::Node {
   int gamma_index; // index to record the location of the optimum gamma value
   bool gain_flag = false;
   std::string image_topic;
+  std::string shutter_update_method;
+  std::string shim_update_function;
   //std::string service_call ="camera/spinnaker_camera_nodelet/set_parameters";
   //std::string exp_param_call = "camera/spinnaker_camera_nodelet/exposure_time";
   //std::string gain_param_call = "camera/spinnaker_camera_nodelet/gain";

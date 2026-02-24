@@ -78,6 +78,14 @@ namespace exp_node
     	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
 
+		declare_parameter<std::string>("shutter_update_method", "simple");
+		get_parameter("shutter_update_method", shutter_update_method);
+		RCLCPP_INFO(get_logger(), "shutter update method: %s", shutter_update_method.c_str());
+
+		declare_parameter<std::string>("shim_update_function", "2018");
+		get_parameter("shim_update_function", shim_update_function);
+		RCLCPP_INFO(get_logger(), "shim update function: %s", shim_update_function.c_str());
+
 		test_shutter_speed = lower_shutter_limit;
 		metric_tmp = 0;
 
@@ -309,7 +317,23 @@ namespace exp_node
 			
 			//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
 
-			shutter_new = shutter_cur + 0.5*1000.0*(gamma_index - 3)/1000000.0;
+			if (shutter_update_method == "gradient") {
+				double D = 2*coeff_curve[0] + coeff_curve[1];
+				shutter_new = shutter_cur + 0.0001*D;
+			} else if (shutter_update_method == "shim") {
+				expCur = log2(7.84 / (shutter_cur * pow(2, gain_cur/6.0)));
+				if (shim_update_function == "2014") {
+					expNew = (1 + kp * alpha * (1 - max_gamma)) * expCur;
+				} else { // "2018"
+					double gamma_nudge = 0.0;
+					if (max_gamma >= 1.0) R = -pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+					else                  R =  pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+					expNew = (1 + alpha * kp * (R - 1)) * expCur;
+				}
+				shutter_new = 7.84 / pow(2, expNew);
+			} else { // "simple"
+				shutter_new = shutter_cur + 0.5*1000.0*(gamma_index - 3)/1000000.0;
+			}
 
 			// double max_jump = 0.01;
 
