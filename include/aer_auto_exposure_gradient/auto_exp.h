@@ -61,6 +61,9 @@ class ExpNode : public rclcpp::Node {
   void gnulot(double * coeff_curve);
   void CameraCb(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
   void optimizerCb();
+  void optimizeGradient();
+  void optimizeSimple();
+  void optimizeShim();
   double image_gradient_gamma(cv::Mat &src_img, int j);
   void ChangeParam (double shutter_new, double gain_new);
   
@@ -113,11 +116,11 @@ class ExpNode : public rclcpp::Node {
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
 #endif
 
- int fps;
+  int img_proc_loop_hz_;
 
   // Optimizer timer state
   double coeff_[POLYNOME_DEGREE + 1];  // curve-fit coefficients shared with optimizerCb
-  double optimizer_loop_hz_;
+  int optimizer_loop_hz_;
   std::mutex optimizer_mutex_;
   rclcpp::TimerBase::SharedPtr optimizer_timer_;
 };

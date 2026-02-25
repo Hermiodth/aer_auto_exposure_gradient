@@ -57,13 +57,13 @@ namespace exp_node
 		get_parameter("startup_delay", startup_delay);
     	RCLCPP_INFO(get_logger(), "startup delay: %i", startup_delay);
 
-		declare_parameter<int>("fps", 1);
-		get_parameter("fps", fps);
-    	RCLCPP_INFO(get_logger(), "fps: %i", fps);
+		declare_parameter<int>("img_proc_loop_hz", 1);
+		get_parameter("img_proc_loop_hz", img_proc_loop_hz_);
+    	RCLCPP_INFO(get_logger(), "img_proc_loop_hz: %i", img_proc_loop_hz_);
 
-		declare_parameter<double>("optimizer_loop_hz", 10.0);
+		declare_parameter<int>("optimizer_loop_hz", 10);
 		get_parameter("optimizer_loop_hz", optimizer_loop_hz_);
-		RCLCPP_INFO(get_logger(), "optimizer loop hz: %.1f", optimizer_loop_hz_);
+		RCLCPP_INFO(get_logger(), "optimizer loop hz: %i", optimizer_loop_hz_);
 
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
         // std::cout <<"the value of service call val is : "<< service_call<<"\n";
@@ -126,6 +126,76 @@ namespace exp_node
 		}
 #endif
 	}
+
+	void ExpNode::optimizerCb() {
+
+		if (shutter_update_method == "gradient") {
+			optimizeGradient();
+		} else if (shutter_update_method == "shim") {
+			optimizeShim();
+		} else { // "simple"
+			optimizeSimple();
+		}
+
+		if (shutter_new > upper_shutter_limit) {
+			gain_flag = true;
+			shutter_new = upper_shutter_limit;
+		} else if (shutter_new < lower_shutter_limit) {
+			gain_flag = true;
+			shutter_new = lower_shutter_limit;
+		} else {
+			gain_flag = false;
+		}
+
+		RCLCPP_INFO(get_logger(), "shutter_new: %.0f us", shutter_new * 1000000.0);
+
+		ChangeParam(shutter_new, 0.0);
+		shutter_cur = shutter_new;
+	}
+
+	void ExpNode::optimizeGradient(){
+		double local_max_gamma;
+		int    local_gamma_index;
+		double local_coeff[POLYNOME_DEGREE + 1];
+		{
+			std::lock_guard<std::mutex> lock(optimizer_mutex_);
+			local_max_gamma   = max_gamma;
+			local_gamma_index = gamma_index;
+			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) local_coeff[i] = coeff_[i];
+		}
+
+		double D = 2*local_coeff[0] + local_coeff[1];
+		shutter_new = shutter_cur + 0.0001 * grad_k * D;
+	}
+
+	void ExpNode::optimizeSimple(){
+		int    local_gamma_index;
+		{
+			std::lock_guard<std::mutex> lock(optimizer_mutex_);
+			local_gamma_index = gamma_index;
+		}
+		shutter_new = shutter_cur + 0.5*1000.0*(local_gamma_index - 3)/1000000.0;
+	}
+
+	void ExpNode::optimizeShim(){
+		double local_max_gamma;
+		{
+			std::lock_guard<std::mutex> lock(optimizer_mutex_);
+			local_max_gamma   = max_gamma;
+		}
+		alpha = 1.0;
+
+		expCur = log2(7.84 / (shutter_cur * pow(2, gain_cur/6.0)));
+		if (shim_update_function == "2014") {
+			expNew = (1 + kp * alpha * (1 - local_max_gamma)) * expCur;
+		} else { // "2018"
+			double gamma_nudge = 0.0;
+			if (local_max_gamma >= 1.0) R = -pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+			else                        R =  pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+			expNew = (1 + alpha * kp * (R - 1)) * expCur;
+		}
+		shutter_new = 7.84 / pow(2, expNew);
+	}
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
 		//// code for measuring the true optimal exposure time
@@ -173,7 +243,7 @@ namespace exp_node
 
 		// Non-blocking rate limit: skip if not enough time has elapsed since last processing
 		if (last_camera_process_time_ &&
-		    (now() - *last_camera_process_time_).seconds() < 1.0 / fps) {
+		    (now() - *last_camera_process_time_).seconds() < 1.0 / img_proc_loop_hz_) {
 			return;
 		}
 
@@ -458,55 +528,6 @@ namespace exp_node
     //     //ros::service::call("/blackfly/spinnaker_camera_nodelet/set_parameters",srv_req, srv_resp);
 	// ros::service::call(service_call,srv_req, srv_resp);
     // }
-	
-
-	void ExpNode::optimizerCb() {
-		double local_max_gamma;
-		int    local_gamma_index;
-		double local_coeff[POLYNOME_DEGREE + 1];
-		{
-			std::lock_guard<std::mutex> lock(optimizer_mutex_);
-			local_max_gamma   = max_gamma;
-			local_gamma_index = gamma_index;
-			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) local_coeff[i] = coeff_[i];
-		}
-
-		alpha = 1.0;
-
-		if (shutter_update_method == "gradient") {
-			double D = 2*local_coeff[0] + local_coeff[1];
-			shutter_new = shutter_cur + 0.0001 * grad_k * D;
-		} else if (shutter_update_method == "shim") {
-			expCur = log2(7.84 / (shutter_cur * pow(2, gain_cur/6.0)));
-			if (shim_update_function == "2014") {
-				expNew = (1 + kp * alpha * (1 - local_max_gamma)) * expCur;
-			} else { // "2018"
-				double gamma_nudge = 0.0;
-				if (local_max_gamma >= 1.0) R = -pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
-				else                        R =  pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
-				expNew = (1 + alpha * kp * (R - 1)) * expCur;
-			}
-			shutter_new = 7.84 / pow(2, expNew);
-		} else { // "simple"
-			shutter_new = shutter_cur + 0.5*1000.0*(local_gamma_index - 3)/1000000.0;
-		}
-
-		if (shutter_new > upper_shutter_limit) {
-			gain_flag = true;
-			shutter_new = upper_shutter_limit;
-		} else if (shutter_new < lower_shutter_limit) {
-			gain_flag = true;
-			shutter_new = lower_shutter_limit;
-		} else {
-			gain_flag = false;
-		}
-
-		RCLCPP_INFO(get_logger(), "max gamma: %f; shutter_cur: %.0f us; shutter_new: %.0f us",
-			local_max_gamma, shutter_cur * 1000000.0, shutter_new * 1000000.0);
-
-		ChangeParam(shutter_new, 0.0);
-		shutter_cur = shutter_new;
-	}
 
 	void ExpNode::generate_LUT (){
 		
