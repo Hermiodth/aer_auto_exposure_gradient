@@ -43,10 +43,15 @@ namespace exp_node
 		get_parameter("grad_k", grad_k);
     	RCLCPP_INFO(get_logger(), "grad_k: %.2f", grad_k);
 
+		declare_parameter<double>("gamma_x_offset", 0.0);
+		get_parameter("gamma_x_offset", gamma_x_offset_);
+    	RCLCPP_INFO(get_logger(), "gamma_x_offset: %.2f", gamma_x_offset_);
+
 		declare_parameter<int>("initial_shutter_speed", 5000);
 		int initial_shutter_speed;
 		get_parameter("initial_shutter_speed", initial_shutter_speed);
 		shutter_cur = (double)initial_shutter_speed/1000000.0;	// from microseconds to seconds
+		shutter_at_camera_ = shutter_cur;
     	RCLCPP_INFO(get_logger(), "initial shutter speed: %i", initial_shutter_speed);
 
 		declare_parameter<double>("initial_gain", 0.0);
@@ -90,6 +95,10 @@ namespace exp_node
     	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
 
+		gamma_est_pub_         = this->create_publisher<std_msgs::msg::Float32>("gradient/gamma_est", 10);
+		gradient_pub_          = this->create_publisher<std_msgs::msg::Float32>("gradient/D", 10);
+		gradient_clipped_pub_  = this->create_publisher<std_msgs::msg::Float32>("gradient/D_clipped", 10);
+
 		declare_parameter<std::string>("shutter_update_method", "simple");
 		get_parameter("shutter_update_method", shutter_update_method);
 		RCLCPP_INFO(get_logger(), "shutter update method: %s", shutter_update_method.c_str());
@@ -119,6 +128,13 @@ namespace exp_node
 			plotter_gamma = std::make_shared<plotter_ros2::Plotter>(
 				node_ptr,
 				"plot_example",
+				800,
+				600,
+				cv::Scalar(255, 255, 255)
+			);
+			plotter_sweep = std::make_shared<plotter_ros2::Plotter>(
+				node_ptr,
+				"plot_sweep",
 				800,
 				600,
 				cv::Scalar(255, 255, 255)
@@ -154,18 +170,46 @@ namespace exp_node
 	}
 
 	void ExpNode::optimizeGradient(){
-		double local_max_gamma;
-		int    local_gamma_index;
 		double local_coeff[POLYNOME_DEGREE + 1];
+		double local_shutter_at_camera;
+		bool   local_new_camera_data;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
-			local_max_gamma   = max_gamma;
-			local_gamma_index = gamma_index;
-			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) local_coeff[i] = coeff_[i];
+			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) {
+				local_coeff[i] = coeff_[i];
+				RCLCPP_INFO(get_logger(), "coeff %i: %.2f", i, local_coeff[i]);
+			}
+			local_shutter_at_camera = shutter_at_camera_;
+			local_new_camera_data   = new_camera_data_;
+			new_camera_data_        = false;
 		}
 
-		double D = 2*local_coeff[0] + local_coeff[1];
-		shutter_new = shutter_cur + 0.0001 * grad_k * D;
+		// Reset gamma estimate whenever a new image has been processed
+		if (local_new_camera_data) {
+			gamma_est_ = 1.0;
+		}
+
+		// Gradient of the fitted quadratic evaluated at the current gamma estimate.
+		// gamma_est_ changes each optimizer step, so D changes too.
+		double D = 2 * local_coeff[0] * (gamma_est_ - gamma_x_offset_) + local_coeff[1];
+		RCLCPP_INFO(get_logger(), "GRADIENT at gamma=%.3f: %.2f", gamma_est_, D);
+		double max_grad = 0.5;
+		double D_clipped = std::clamp(D, -max_grad, max_grad);
+
+		// Gradient ascent step in gamma space
+		gamma_est_ +=  grad_k * D_clipped;
+
+		// Convert gamma to shutter multiplicatively: anchor on the shutter speed
+		// that was active when the current curve fit was computed
+		shutter_new = local_shutter_at_camera * gamma_est_;
+
+		std_msgs::msg::Float32 msg;
+		msg.data = static_cast<float>(gamma_est_);
+		gamma_est_pub_->publish(msg);
+		msg.data = static_cast<float>(D);
+		gradient_pub_->publish(msg);
+		msg.data = static_cast<float>(D_clipped);
+		gradient_clipped_pub_->publish(msg);
 	}
 
 	void ExpNode::optimizeSimple(){
@@ -206,33 +250,64 @@ namespace exp_node
 		// 	return;
 		// }
 
-		// if(test_shutter_speed < upper_shutter_limit*1000000.0) {
-		// 	cv::Mat image1;
-		// 	try {
-		// 		image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
-		// 	} catch (cv_bridge::Exception& e) {
-		// 		RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
-		// 	}
+		// Run a simple shutter speed sweep to see where the true optimum lies
+// 		if(test_shutter_speed < upper_shutter_limit*1000000.0) {
+// 			cv::Mat image1;
+// 			try {
+// 				image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
+// 			} catch (cv_bridge::Exception& e) {
+// 				RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+// 			}
 
-		// 	cv::Mat image2;
-		// 	cv::Size size(342,408);
-		// 	cv::resize(image1, image2, size);
+// 			cv::Mat image2;
+// 			cv::Size size(342,408);
+// 			cv::resize(image1, image2, size);
 
-		// 	double test_metric = image_gradient_gamma(image2, 3);
-		// 	RCLCPP_INFO(get_logger(), "test shutter: %i, test metric: %f", test_shutter_speed, test_metric);
-		// 	if(test_metric > metric_tmp) {
-		// 		true_best_shutter_speed = test_shutter_speed;
-		// 		metric_tmp = test_metric;
-		// 	}
-		// 	RCLCPP_INFO(get_logger(), "best shutter: %i, test metric: %f", true_best_shutter_speed, metric_tmp);
+// 			double test_metric = image_gradient_gamma(image2, 3);
+// 			RCLCPP_INFO(get_logger(), "test shutter: %i, test metric: %f", test_shutter_speed, test_metric);
+// 			if(test_metric > metric_tmp) {
+// 				true_best_shutter_speed = test_shutter_speed;
+// 				metric_tmp = test_metric;
+// 			}
+// 			RCLCPP_INFO(get_logger(), "best shutter: %i, test metric: %f", true_best_shutter_speed, metric_tmp);
 
-		// 	ChangeParam(((double)test_shutter_speed)/1000000.0, 0.0);
-		// 	test_shutter_speed += 1000;
+// #ifdef WITH_PLOTTER
+// 			if (enable_plotter) {
+// 				sweep_shutters_.push_back((double)test_shutter_speed);
+// 				sweep_metrics_.push_back(test_metric);
+// 			}
+// #endif
 
-		// 	usleep(300000);
+// 			ChangeParam(((double)test_shutter_speed)/1000000.0, 0.0);
+// 			test_shutter_speed += 1000;
 
-		// 	return;
-		// }
+// #ifdef WITH_PLOTTER
+// 			if (enable_plotter && test_shutter_speed >= (int)(upper_shutter_limit * 1000000.0)) {
+// 				plotter_sweep->clear();
+// 				plotter_sweep->plot(
+// 					sweep_shutters_.data(),
+// 					sweep_metrics_.data(),
+// 					(int)sweep_shutters_.size(),
+// 					'*',
+// 					2,
+// 					cv::Scalar(255, 0, 0)
+// 				);
+// 				double best_x[1] = { (double)true_best_shutter_speed };
+// 				double best_y[1] = { metric_tmp };
+// 				plotter_sweep->plot(best_x, best_y, 1, '*', 6, cv::Scalar(0, 0, 255));
+// 				plotter_sweep->publish();
+// 				RCLCPP_INFO(get_logger(), "Sweep done. Best shutter: %i us. Starting periodic republish.", true_best_shutter_speed);
+// 				sweep_republish_timer_ = create_wall_timer(
+// 					std::chrono::seconds(1),
+// 					[this]() { plotter_sweep->publish(); }
+// 				);
+// 			}
+// #endif
+
+// 			usleep(300000);
+
+// 			return;
+// 		}
 
 		if(!callback_start_time) callback_start_time = std::make_shared<rclcpp::Time>(now());
 		if((now() - *callback_start_time.get()).seconds() < startup_delay) {
@@ -369,6 +444,8 @@ namespace exp_node
 			{
 				std::lock_guard<std::mutex> lock(optimizer_mutex_);
 				for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = coeff[i];
+				shutter_at_camera_ = shutter_cur;
+				new_camera_data_   = true;
 				// gamma_index and max_gamma are already updated as members above
 			}
 

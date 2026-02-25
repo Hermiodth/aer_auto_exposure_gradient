@@ -4,6 +4,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <vector>
 #include <libgen.h>
 #include <math.h>
 #include <mutex>
@@ -91,6 +92,7 @@ class ExpNode : public rclcpp::Node {
   //std::string gain_param_call = "camera/spinnaker_camera_nodelet/gain";
 
   double grad_k;
+  double gamma_x_offset_ = 0.0;
 
   // Parameters that correlated to Shim's Gradient Metric
   double met_act_thresh = 0.06;
@@ -102,6 +104,9 @@ class ExpNode : public rclcpp::Node {
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr shutter_speed_us_pub;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gamma_est_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gradient_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gradient_clipped_pub_;
 
   std::shared_ptr<rclcpp::Time> callback_start_time;
   std::shared_ptr<rclcpp::Time> zeroing_duration;
@@ -114,15 +119,24 @@ class ExpNode : public rclcpp::Node {
 #ifdef WITH_PLOTTER
   bool enable_plotter;
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
+  std::shared_ptr<plotter_ros2::Plotter> plotter_sweep;
+  std::vector<double> sweep_shutters_;
+  std::vector<double> sweep_metrics_;
+  rclcpp::TimerBase::SharedPtr sweep_republish_timer_;
 #endif
 
   int img_proc_loop_hz_;
 
   // Optimizer timer state
   double coeff_[POLYNOME_DEGREE + 1];  // curve-fit coefficients shared with optimizerCb
+  double shutter_at_camera_ = 0.0;     // shutter speed when last image was captured
+  bool   new_camera_data_   = false;   // flag: new curve-fit data available
   int optimizer_loop_hz_;
   std::mutex optimizer_mutex_;
   rclcpp::TimerBase::SharedPtr optimizer_timer_;
+
+  // Gradient optimizer state (optimizer thread only, no mutex needed)
+  double gamma_est_ = 1.0;  // current gamma estimate, resets to 1.0 on each new image
 };
 
 }
