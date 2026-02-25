@@ -39,6 +39,10 @@ namespace exp_node
 		get_parameter("kp", kp);
     	RCLCPP_INFO(get_logger(), "kp param: %.2f", kp);
 
+		declare_parameter<double>("grad_k", 1.0);
+		get_parameter("grad_k", grad_k);
+    	RCLCPP_INFO(get_logger(), "grad_k: %.2f", grad_k);
+
 		declare_parameter<int>("initial_shutter_speed", 5000);
 		int initial_shutter_speed;
 		get_parameter("initial_shutter_speed", initial_shutter_speed);
@@ -52,6 +56,14 @@ namespace exp_node
 		declare_parameter<int>("startup_delay", 1);
 		get_parameter("startup_delay", startup_delay);
     	RCLCPP_INFO(get_logger(), "startup delay: %i", startup_delay);
+
+		declare_parameter<int>("fps", 1);
+		get_parameter("fps", fps);
+    	RCLCPP_INFO(get_logger(), "fps: %i", fps);
+
+		declare_parameter<double>("optimizer_loop_hz", 10.0);
+		get_parameter("optimizer_loop_hz", optimizer_loop_hz_);
+		RCLCPP_INFO(get_logger(), "optimizer loop hz: %.1f", optimizer_loop_hz_);
 
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
         // std::cout <<"the value of service call val is : "<< service_call<<"\n";
@@ -88,6 +100,17 @@ namespace exp_node
 
 		test_shutter_speed = lower_shutter_limit;
 		metric_tmp = 0;
+
+		// Initialize shared optimizer state
+		max_gamma   = 1.0;
+		gamma_index = 3;   // index of gamma == 1.0 (neutral)
+		for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = 0.0;
+
+		int optimizer_period_ms = static_cast<int>(1000.0 / optimizer_loop_hz_);
+		optimizer_timer_ = create_wall_timer(
+			std::chrono::milliseconds(optimizer_period_ms),
+			std::bind(&ExpNode::optimizerCb, this)
+		);
 
 #ifdef WITH_PLOTTER
 		declare_parameter<bool>("enable_plotter", true);
@@ -143,11 +166,14 @@ namespace exp_node
 
 		if(!callback_start_time) callback_start_time = std::make_shared<rclcpp::Time>(now());
 		if((now() - *callback_start_time.get()).seconds() < startup_delay) {
-			RCLCPP_INFO(get_logger(), "startup delay: %i; will wait for %f and publishing initial shutter speed of %.0f ms and gain of %.2f", 
+			RCLCPP_INFO(get_logger(), "startup delay: %i; will wait for %f and publishing initial shutter speed of %.0f ms and gain of %.2f",
 			startup_delay, (now() - *callback_start_time.get()).seconds(), shutter_cur * 1000000.0, gain_cur);
+			return;
+		}
 
-			ChangeParam(shutter_cur, gain_cur);
-
+		// Non-blocking rate limit: skip if not enough time has elapsed since last processing
+		if (last_camera_process_time_ &&
+		    (now() - *last_camera_process_time_).seconds() < 1.0 / fps) {
 			return;
 		}
 
@@ -267,133 +293,20 @@ namespace exp_node
 				max_gamma = gamma[gamma_index];
 			}
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-			// alpha value refers to Shim's 2014 paper
-			// if (max_gamma < 1)
-			//     //{alpha = 0.5;} //original paper used 0.5
-			// 	{alpha = 1.0;}
-			// if (max_gamma >= 1)
-			// 	{alpha = 1.0;}
-
-			alpha = 1.0;
-			
-			// TODO: obtain current shutter speed and gain from camera driver
-			//ros::param::get("/blackfly/spinnaker_camera_nodelet/exposure_time", shutter_cur); // get the current shutter
-			//ros::param::get("/blackfly/spinnaker_camera_nodelet/gain", gain_cur); // get the current gain
-			//ros::param::get(exp_param_call, shutter_cur); // get the current shutter
-			//ros::param::get(gain_param_call, gain_cur); // get the current gain
-			
-			/* ========================== original algorithm ========================== */
-			// //shutter_cur = shutter_cur / 1000000; // unit from micro-second to second
-			// expCur = log2(7.84/( shutter_cur* pow(2,(gain_cur/6.0)) ) ); // The 7.84 here is because the camera we are using has a F-number of 2.8 (7.84 = 2.8^2)
-			// //RCLCPP_INFO(get_logger(), "============================================");
-			// //RCLCPP_INFO(get_logger(), "shutter_cur: %f", shutter_cur);
-			// //RCLCPP_INFO(get_logger(), "expCur: %f", expCur);		
-
-			// // This update function was implemented in Shim's 2018 paper which is an update version of his 2014 paper
-			// // R = d * tan( (2 - max_gamma) * atan2(1,d) - atan2(1,d) ) + 1;
-			// // R = d * pow((1-max_gamma), 3) + 1;
-			// // if(max_gamma >= 1.0) R = -d * pow((max_gamma - 1), 2) + 1;
-			// // else 				 R =  d * pow((max_gamma - 1), 2) + 1;
-			// double gamma_nudge = 0.0;
-			// if(max_gamma >= 1.0) R = -pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
-			// else 				 R =  pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
-			// expNew = (1 + alpha * kp * (R-1)) * expCur;
-			// RCLCPP_INFO(get_logger(), "R: %f", R);
-
-			// // Shim's 2014 version of update function
-			// // expNew = (1+ kp * alpha * (1-max_gamma)) * expCur;
-			// //RCLCPP_INFO(get_logger(), "expNew: %f", expNew); 
-		
-			// shutter_new = (7.84) * 1/(pow(2,expNew)); //[unit: micro-second]  Note: 7.84 = 2.8*2.8
-			// //RCLCPP_INFO(get_logger(), "shutter_new: %f", shutter_new);
-			// //RCLCPP_INFO(get_logger(), "============================================");
-			/* ======================================================================== */
-
-			// double D = 2*coeff_curve[0] + coeff_curve[1];
-			// RCLCPP_INFO(get_logger(), "derivative: %f", D);
-			// shutter_new = shutter_cur + 0.0001*D;
-			
-			//std::cout << "\ngain: " << round(gain_cur) << "   shutter_new: "<< shutter_new << std::endl; //
-
-			if (shutter_update_method == "gradient") {
-				double D = 2*coeff_curve[0] + coeff_curve[1];
-				shutter_new = shutter_cur + 0.0001*D;
-			} else if (shutter_update_method == "shim") {
-				expCur = log2(7.84 / (shutter_cur * pow(2, gain_cur/6.0)));
-				if (shim_update_function == "2014") {
-					expNew = (1 + kp * alpha * (1 - max_gamma)) * expCur;
-				} else { // "2018"
-					double gamma_nudge = 0.0;
-					if (max_gamma >= 1.0) R = -pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
-					else                  R =  pow((max_gamma - (1.0 - gamma_nudge)), 2) + 1;
-					expNew = (1 + alpha * kp * (R - 1)) * expCur;
-				}
-				shutter_new = 7.84 / pow(2, expNew);
-			} else { // "simple"
-				shutter_new = shutter_cur + 0.5*1000.0*(gamma_index - 3)/1000000.0;
-			}
-
-			// double max_jump = 0.01;
-
-			// if((shutter_new/shutter_cur - 1.0) > max_jump){
-			// 	shutter_new = (1.0 + max_jump) * shutter_cur;
-			// }
-			// if((shutter_cur/shutter_new - 1.0) > max_jump){
-			// 	shutter_new = (1.0 - max_jump) * shutter_cur;
-			// }
-
-			if (shutter_new > upper_shutter_limit) {
-				gain_flag = true;
-				shutter_new = upper_shutter_limit;
-			}
-			else if (shutter_new < lower_shutter_limit) {
-				gain_flag = true;
-				shutter_new = lower_shutter_limit;
-			}
-			else {
-				gain_flag = false;
-			}
-
-			// we don't care about gain now
-			// if (gain_flag == true) {
-			// 	gain_new = 6.0 * (expCur - expNew) + gain_cur;
-		
-			// 	if (gain_new > 30)
-			// 		{gain_new = 30;}
-			// 	else if (gain_new < -10)
-			// 		{gain_new = -10;}
-			// 	gain_flag = false;                    		
-			// }
-			// else if  (shutter_new < upper_shutter_limit && shutter_new > lower_shutter_limit) {
-			// 	gain_new = 0.0;
-			// 	//gain_flag = false;
-			// 	//gain_cur=gain_new;
-			// }
-
-			///////////////////////////// Comment or delete the following three lines in implementation ////////////////
-			//RCLCPP_INFO(get_logger(), "gain: %f, shutter_new: %f", round(gain_cur), shutter_new);
 			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
-			//RCLCPP_INFO(get_logger(), "max gamma: %f; gain_new: %.2f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, gain_new, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
-			RCLCPP_INFO(get_logger(), "max gamma: %f; shutter_cur: %.0f ms; shutter_new: %.0f ms", max_gamma, (double)shutter_cur * 1000000.0, (double)shutter_new * 1000000.0);
 
-			///////////////////////////////////////////////////////////////////
-			// Then call the function to determine what exposure time and gain to update
-			///////////////////////////////////////////////////////////////////
+			// Store curve-fit coefficients and gamma result for the optimizer timer
+			{
+				std::lock_guard<std::mutex> lock(optimizer_mutex_);
+				for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = coeff[i];
+				// gamma_index and max_gamma are already updated as members above
+			}
 
-			//ChangeParam(shutter_new, gain_new); // may input the gain and exposure time update
-			ChangeParam(shutter_new, 0.0); // may input the gain and exposure time update
-			shutter_cur = shutter_new;
-
-			RCLCPP_INFO(get_logger(), "true_best_shutter_speed/shutter_cur: %f", (true_best_shutter_speed/1000000.0)/shutter_cur);
+			last_camera_process_time_ = std::make_shared<rclcpp::Time>(now());
 		}
 		catch (cv_bridge::Exception& e) {
 			RCLCPP_ERROR(get_logger(), "Could not convert from '%s' to 'mono8'.", msg->encoding.c_str());
 		}
-		
-
-		//usleep(300000);
 	}
 
 	double ExpNode::image_gradient_gamma(cv::Mat &src_img, int j) {
@@ -546,6 +459,54 @@ namespace exp_node
 	// ros::service::call(service_call,srv_req, srv_resp);
     // }
 	
+
+	void ExpNode::optimizerCb() {
+		double local_max_gamma;
+		int    local_gamma_index;
+		double local_coeff[POLYNOME_DEGREE + 1];
+		{
+			std::lock_guard<std::mutex> lock(optimizer_mutex_);
+			local_max_gamma   = max_gamma;
+			local_gamma_index = gamma_index;
+			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) local_coeff[i] = coeff_[i];
+		}
+
+		alpha = 1.0;
+
+		if (shutter_update_method == "gradient") {
+			double D = 2*local_coeff[0] + local_coeff[1];
+			shutter_new = shutter_cur + 0.0001 * grad_k * D;
+		} else if (shutter_update_method == "shim") {
+			expCur = log2(7.84 / (shutter_cur * pow(2, gain_cur/6.0)));
+			if (shim_update_function == "2014") {
+				expNew = (1 + kp * alpha * (1 - local_max_gamma)) * expCur;
+			} else { // "2018"
+				double gamma_nudge = 0.0;
+				if (local_max_gamma >= 1.0) R = -pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+				else                        R =  pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
+				expNew = (1 + alpha * kp * (R - 1)) * expCur;
+			}
+			shutter_new = 7.84 / pow(2, expNew);
+		} else { // "simple"
+			shutter_new = shutter_cur + 0.5*1000.0*(local_gamma_index - 3)/1000000.0;
+		}
+
+		if (shutter_new > upper_shutter_limit) {
+			gain_flag = true;
+			shutter_new = upper_shutter_limit;
+		} else if (shutter_new < lower_shutter_limit) {
+			gain_flag = true;
+			shutter_new = lower_shutter_limit;
+		} else {
+			gain_flag = false;
+		}
+
+		RCLCPP_INFO(get_logger(), "max gamma: %f; shutter_cur: %.0f us; shutter_new: %.0f us",
+			local_max_gamma, shutter_cur * 1000000.0, shutter_new * 1000000.0);
+
+		ChangeParam(shutter_new, 0.0);
+		shutter_cur = shutter_new;
+	}
 
 	void ExpNode::generate_LUT (){
 		

@@ -16,6 +16,9 @@ def get_processed_launch_objects(context):
         parameters=[{
             'image_topic': f'/{uav_name}/{camera_name}/image_raw',
             'shutter_speed_apply_topic': f'/{uav_name}/expose_us',
+            'fps': 1,
+            'shutter_update_method': 'gradient',
+            'grad_k': 5.0
         }],
         extra_arguments=[{'use_intra_process_comms': True}],
     )

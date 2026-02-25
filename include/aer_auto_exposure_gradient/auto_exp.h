@@ -6,6 +6,7 @@
 #include <iostream>
 #include <libgen.h>
 #include <math.h>
+#include <mutex>
 #include <sys/time.h>
 #include <string>
 #include <sstream>
@@ -59,6 +60,7 @@ class ExpNode : public rclcpp::Node {
  
   void gnulot(double * coeff_curve);
   void CameraCb(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
+  void optimizerCb();
   double image_gradient_gamma(cv::Mat &src_img, int j);
   void ChangeParam (double shutter_new, double gain_new);
   
@@ -85,6 +87,8 @@ class ExpNode : public rclcpp::Node {
   //std::string exp_param_call = "camera/spinnaker_camera_nodelet/exposure_time";
   //std::string gain_param_call = "camera/spinnaker_camera_nodelet/gain";
 
+  double grad_k;
+
   // Parameters that correlated to Shim's Gradient Metric
   double met_act_thresh = 0.06;
   double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper) 
@@ -98,6 +102,7 @@ class ExpNode : public rclcpp::Node {
 
   std::shared_ptr<rclcpp::Time> callback_start_time;
   std::shared_ptr<rclcpp::Time> zeroing_duration;
+  std::shared_ptr<rclcpp::Time> last_camera_process_time_;
 
   int test_shutter_speed;
   int true_best_shutter_speed;
@@ -107,6 +112,14 @@ class ExpNode : public rclcpp::Node {
   bool enable_plotter;
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
 #endif
+
+ int fps;
+
+  // Optimizer timer state
+  double coeff_[POLYNOME_DEGREE + 1];  // curve-fit coefficients shared with optimizerCb
+  double optimizer_loop_hz_;
+  std::mutex optimizer_mutex_;
+  rclcpp::TimerBase::SharedPtr optimizer_timer_;
 };
 
 }

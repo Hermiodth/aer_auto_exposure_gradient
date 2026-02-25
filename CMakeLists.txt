@@ -64,12 +64,6 @@ install(TARGETS ${PROJECT_NAME}_component
         RUNTIME DESTINATION bin
 )
 
-# add_executable(exp_node1 src/exp_node1.cpp)
-# target_link_libraries(exp_node1  ${PROJECT_NAME})
-# #add_dependencies(exp_node1 ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
-# ament_target_dependencies(exp_node1 ${DEPENDENCIES})
-# install(TARGETS exp_node1 DESTINATION lib/${PROJECT_NAME})
-
 install(DIRECTORY include/${PROJECT_NAME}/ DESTINATION include/${PROJECT_NAME})
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 
