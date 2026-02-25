@@ -43,9 +43,17 @@ namespace exp_node
 		get_parameter("grad_k", grad_k);
     	RCLCPP_INFO(get_logger(), "grad_k: %.2f", grad_k);
 
+		declare_parameter<bool>("do_sweep", false);
+		get_parameter("do_sweep", do_sweep);
+		RCLCPP_INFO(get_logger(), "do_sweep: %s", do_sweep ? "yes" : "no");
+
 		declare_parameter<double>("gamma_x_offset", 0.0);
 		get_parameter("gamma_x_offset", gamma_x_offset_);
     	RCLCPP_INFO(get_logger(), "gamma_x_offset: %.2f", gamma_x_offset_);
+
+		declare_parameter<std::string>("curve_fit_method", "quadratic");
+		get_parameter("curve_fit_method", curve_fit_method_);
+		RCLCPP_INFO(get_logger(), "curve_fit_method: %s", curve_fit_method_.c_str());
 
 		declare_parameter<int>("initial_shutter_speed", 5000);
 		int initial_shutter_speed;
@@ -189,9 +197,19 @@ namespace exp_node
 			gamma_est_ = 1.0;
 		}
 
-		// Gradient of the fitted quadratic evaluated at the current gamma estimate.
+		// Gradient of the fitted curve evaluated at the current gamma estimate.
 		// gamma_est_ changes each optimizer step, so D changes too.
-		double D = 2 * local_coeff[0] * (gamma_est_ - gamma_x_offset_) + local_coeff[1];
+		// gamma_x_offset_ shifts the convergence point (in x-space for quadratic,
+		// in log-x-space for log_quadratic).
+		double D;
+		if (curve_fit_method_ == "log_quadratic") {
+			// df/dx = (2A*ln(x) + B) / x; offset applied in log-space
+			D = (2 * local_coeff[0] * (std::log(gamma_est_) - gamma_x_offset_) + local_coeff[1])
+			    / gamma_est_;
+		} else {
+			// df/dx = 2A*x + B (quadratic)
+			D = 2 * local_coeff[0] * (gamma_est_ - gamma_x_offset_) + local_coeff[1];
+		}
 		RCLCPP_INFO(get_logger(), "GRADIENT at gamma=%.3f: %.2f", gamma_est_, D);
 		double max_grad = 0.5;
 		double D_clipped = std::clamp(D, -max_grad, max_grad);
@@ -250,64 +268,66 @@ namespace exp_node
 		// 	return;
 		// }
 
-		// Run a simple shutter speed sweep to see where the true optimum lies
-// 		if(test_shutter_speed < upper_shutter_limit*1000000.0) {
-// 			cv::Mat image1;
-// 			try {
-// 				image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
-// 			} catch (cv_bridge::Exception& e) {
-// 				RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
-// 			}
+		//Run a simple shutter speed sweep to see where the true optimum lies
+		if(do_sweep){
+			if(test_shutter_speed < upper_shutter_limit*1000000.0) {
+				cv::Mat image1;
+				try {
+					image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
+				} catch (cv_bridge::Exception& e) {
+					RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+				}
 
-// 			cv::Mat image2;
-// 			cv::Size size(342,408);
-// 			cv::resize(image1, image2, size);
+				cv::Mat image2;
+				cv::Size size(342,408);
+				cv::resize(image1, image2, size);
 
-// 			double test_metric = image_gradient_gamma(image2, 3);
-// 			RCLCPP_INFO(get_logger(), "test shutter: %i, test metric: %f", test_shutter_speed, test_metric);
-// 			if(test_metric > metric_tmp) {
-// 				true_best_shutter_speed = test_shutter_speed;
-// 				metric_tmp = test_metric;
-// 			}
-// 			RCLCPP_INFO(get_logger(), "best shutter: %i, test metric: %f", true_best_shutter_speed, metric_tmp);
+				double test_metric = image_gradient_gamma(image2, 3);
+				RCLCPP_INFO(get_logger(), "test shutter: %i, test metric: %f", test_shutter_speed, test_metric);
+				if(test_metric > metric_tmp) {
+					true_best_shutter_speed = test_shutter_speed;
+					metric_tmp = test_metric;
+				}
+				RCLCPP_INFO(get_logger(), "best shutter: %i, test metric: %f", true_best_shutter_speed, metric_tmp);
 
-// #ifdef WITH_PLOTTER
-// 			if (enable_plotter) {
-// 				sweep_shutters_.push_back((double)test_shutter_speed);
-// 				sweep_metrics_.push_back(test_metric);
-// 			}
-// #endif
+	#ifdef WITH_PLOTTER
+				if (enable_plotter) {
+					sweep_shutters_.push_back((double)test_shutter_speed);
+					sweep_metrics_.push_back(test_metric);
+				}
+	#endif
 
-// 			ChangeParam(((double)test_shutter_speed)/1000000.0, 0.0);
-// 			test_shutter_speed += 1000;
+				ChangeParam(((double)test_shutter_speed)/1000000.0, 0.0);
+				test_shutter_speed += 1000;
 
-// #ifdef WITH_PLOTTER
-// 			if (enable_plotter && test_shutter_speed >= (int)(upper_shutter_limit * 1000000.0)) {
-// 				plotter_sweep->clear();
-// 				plotter_sweep->plot(
-// 					sweep_shutters_.data(),
-// 					sweep_metrics_.data(),
-// 					(int)sweep_shutters_.size(),
-// 					'*',
-// 					2,
-// 					cv::Scalar(255, 0, 0)
-// 				);
-// 				double best_x[1] = { (double)true_best_shutter_speed };
-// 				double best_y[1] = { metric_tmp };
-// 				plotter_sweep->plot(best_x, best_y, 1, '*', 6, cv::Scalar(0, 0, 255));
-// 				plotter_sweep->publish();
-// 				RCLCPP_INFO(get_logger(), "Sweep done. Best shutter: %i us. Starting periodic republish.", true_best_shutter_speed);
-// 				sweep_republish_timer_ = create_wall_timer(
-// 					std::chrono::seconds(1),
-// 					[this]() { plotter_sweep->publish(); }
-// 				);
-// 			}
-// #endif
+	#ifdef WITH_PLOTTER
+				if (enable_plotter && test_shutter_speed >= (int)(upper_shutter_limit * 1000000.0)) {
+					plotter_sweep->clear();
+					plotter_sweep->plot(
+						sweep_shutters_.data(),
+						sweep_metrics_.data(),
+						(int)sweep_shutters_.size(),
+						'*',
+						2,
+						cv::Scalar(255, 0, 0)
+					);
+					double best_x[1] = { (double)true_best_shutter_speed };
+					double best_y[1] = { metric_tmp };
+					plotter_sweep->plot(best_x, best_y, 1, '*', 6, cv::Scalar(0, 0, 255));
+					plotter_sweep->publish();
+					RCLCPP_INFO(get_logger(), "Sweep done. Best shutter: %i us. Starting periodic republish.", true_best_shutter_speed);
+					sweep_republish_timer_ = create_wall_timer(
+						std::chrono::seconds(1),
+						[this]() { plotter_sweep->publish(); }
+					);
+				}
+	#endif
 
-// 			usleep(300000);
+				usleep(300000);
 
-// 			return;
-// 		}
+				return;
+			}
+		}
 
 		if(!callback_start_time) callback_start_time = std::make_shared<rclcpp::Time>(now());
 		if((now() - *callback_start_time.get()).seconds() < startup_delay) {
@@ -371,7 +391,10 @@ namespace exp_node
 
 			// Call the curve fitting function to find out coefficient
 			double * coeff_curve;
-			coeff_curve = curveFit(gamma, metric);
+			if (curve_fit_method_ == "log_quadratic")
+				coeff_curve = curveFitLogQuadratic(gamma, metric);
+			else
+				coeff_curve = curveFit(gamma, metric);
 
 	#ifdef WITH_PLOTTER
 		if (enable_plotter) {
@@ -398,7 +421,12 @@ namespace exp_node
 				double a = coeff_curve[0];
 				double b = coeff_curve[1];
 				double c = coeff_curve[2];
-				y[i] = a * x[i] * x[i] + b * x[i] + c;
+				if (curve_fit_method_ == "log_quadratic") {
+					double u = std::log(x[i]);
+					y[i] = a * u * u + b * u + c;
+				} else {
+					y[i] = a * x[i] * x[i] + b * x[i] + c;
+				}
 			}
 
 			plotter_gamma->plot(
@@ -425,9 +453,13 @@ namespace exp_node
 			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
 			
 			double metric_check = 0.0;
-			for (int i=0; i < POLYNOME_DEGREE+1; i++) {
-				metric_check = metric_check + coeff[i] * pow(max_gamma, POLYNOME_DEGREE-i);
-			}				
+			if (curve_fit_method_ == "log_quadratic") {
+				double u = std::log(max_gamma);
+				metric_check = coeff[0] * u * u + coeff[1] * u + coeff[2];
+			} else {
+				for (int i = 0; i < POLYNOME_DEGREE + 1; i++)
+					metric_check += coeff[i] * pow(max_gamma, POLYNOME_DEGREE - i);
+			}
 			//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
 			if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	{
@@ -784,48 +816,40 @@ namespace exp_node
 
 double ExpNode::findRoots1(double a[3], double check)
 {
-    double lowest_gamma = gamma[0];
-    double highest_gamma = gamma[GAMMAS_COUNT-1];
-    double opt_gamma = 1.0;
-    
-    // Check if we have a valid quadratic (a[0] != 0)
-    if (std::abs(a[0]) < 1e-10)
-    {
-        RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid quadratic");
-        return 1.0;  // Return neutral
+    double lowest_gamma  = gamma[0];
+    double highest_gamma = gamma[GAMMAS_COUNT - 1];
+    double opt_gamma     = 1.0;
+
+    if (std::abs(a[0]) < 1e-10) {
+        RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid fit");
+        return 1.0;
     }
 
-    double derrivative_at_gamma_1 = 2*a[0] + a[1];
-    
-    // If the polynomial is convex, the curve fit is poor for finding a maximum
-    // Use a SMALL correction based on derivative direction instead of jumping to extremes
-    if (a[0] > 0) {
-        RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
-        // Small step in the direction indicated by derivative, not extreme values
-        if (derrivative_at_gamma_1 >= 0) 
-            return 1.05;  // Small step toward brighter (was 1.9!)
-        else 
-            return 0.95;  // Small step toward darker (was 0.526!)
+    if (curve_fit_method_ == "log_quadratic") {
+        // Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
+        // Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
+        if (a[0] > 0) {
+            // Convex in log-space: use derivative direction at x=1 (ln(1)=0)
+            RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
+            return (a[1] >= 0) ? 1.05 : 0.95;
+        }
+        double ln_opt = -a[1] / (2.0 * a[0]);
+        opt_gamma = std::exp(ln_opt);
+    } else {
+        // Quadratic: A*x^2 + B*x + C, maximum at x = -B/(2A).
+        double derrivative_at_gamma_1 = 2 * a[0] + a[1];
+        if (a[0] > 0) {
+            RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
+            return (derrivative_at_gamma_1 >= 0) ? 1.05 : 0.95;
+        }
+        opt_gamma = -a[1] / (2.0 * a[0]);
     }
-    
-    // Calculate the critical point (where derivative = 0)
-    double derivative_root = -a[1] / (2.0 * a[0]);
-    
-    // Check if the root is within valid range
-    if ((derivative_root <= highest_gamma) && (derivative_root >= lowest_gamma))
-    {
-        opt_gamma = derivative_root;
+
+    if (opt_gamma < lowest_gamma || opt_gamma > highest_gamma) {
+        RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", opt_gamma);
+        return (opt_gamma > highest_gamma) ? 1.05 : 0.95;
     }
-    else
-    {
-        RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", derivative_root);
-        // Instead of returning extremes, return a small correction
-        if (derivative_root > highest_gamma)
-            return 1.05;  // Small step toward brighter
-        else
-            return 0.95;  // Small step toward darker
-    }
-    
+
     return opt_gamma;
 }
 
@@ -858,6 +882,31 @@ double ExpNode::findRoots1(double a[3], double check)
 //   return coff;
    
 // } // END of function curveFit()
+
+// Fits f(x) = a*(ln(x)-b)^2 + c by substituting u=ln(x), yielding A*u^2 + B*u + C.
+// Stored coefficients [A, B, C] encode: A=a, B=-2ab, C=ab^2+c.
+// Optimal x: exp(-B / (2A)).  Derivative df/dx = (2A*ln(x) + B) / x.
+double * ExpNode::curveFitLogQuadratic(double x[7], double y[7])
+{
+    static double coff[3];
+    int i;
+
+    Eigen::MatrixXd A(7, 3);
+    Eigen::MatrixXd b(7, 1);
+
+    for (i = 0; i < 7; i++) {
+        double u = std::log(x[i]);
+        A(i, 0) = u * u;  // ln(x)^2
+        A(i, 1) = u;      // ln(x)
+        A(i, 2) = 1.0;
+    }
+    for (i = 0; i < 7; i++) b(i, 0) = y[i];
+
+    Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
+    for (i = 0; i < 3; i++) coff[i] = Q(i);
+
+    return coff;
+} // END of function curveFitLogQuadratic()
 
 double * ExpNode::curveFit(double x[7], double y[7])
 { 

@@ -21,7 +21,9 @@ def get_processed_launch_objects(context):
             'shutter_update_method': 'gradient',
             'grad_k': 0.05,
             'enable_plotter': True,
-            'gamma_x_offset': 0.0
+            'gamma_x_offset': 0.0,
+            'curve_fit_method': 'log_quadratic',
+            'do_sweep': False
         }],
         extra_arguments=[{'use_intra_process_comms': True}],
     )

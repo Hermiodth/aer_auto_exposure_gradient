@@ -69,6 +69,7 @@ class ExpNode : public rclcpp::Node {
   void ChangeParam (double shutter_new, double gain_new);
   
   double * curveFit (double x[7], double y[7]);
+  double * curveFitLogQuadratic(double x[7], double y[7]);
   double  findRoots1 (double a[6], double check);
   void generate_LUT ();
   bool check_rate = false;
@@ -93,10 +94,13 @@ class ExpNode : public rclcpp::Node {
 
   double grad_k;
   double gamma_x_offset_ = 0.0;
+  std::string curve_fit_method_;
 
   // Parameters that correlated to Shim's Gradient Metric
   double met_act_thresh = 0.06;
-  double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper) 
+  double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper)
+
+  bool do_sweep;
 
   //ros::NodeHandle nh_;
   std::shared_ptr<image_transport::ImageTransport> it_;
