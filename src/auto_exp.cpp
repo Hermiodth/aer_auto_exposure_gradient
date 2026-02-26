@@ -13,26 +13,67 @@ namespace exp_node
 		get_parameter("image_topic", image_topic);
     	RCLCPP_INFO(get_logger(), "image topic: %s", image_topic.c_str());
 
-		declare_parameter<int>("lower_shutter_speed_limit", 1000);
-		int lower_shutter_limit_param;
-		get_parameter("lower_shutter_speed_limit", lower_shutter_limit_param);
-		lower_shutter_limit = (double)lower_shutter_limit_param/1000000.0;
-    	RCLCPP_INFO(get_logger(), "lower shutter speed limit: %.0f", lower_shutter_limit);
+		// --- Actuator configuration ---
+		// Each actuator owns a contiguous slice of the normalized [0,1] optimizer output.
+		// The slices are laid out as: [shutter | gain | LED] from 0 to 1.
 
-		//declare_parameter<int>("upper_shutter_speed_limit", 32754);
-		declare_parameter<int>("upper_shutter_speed_limit", 70000);
-		int upper_shutter_limit_param;
-		get_parameter("upper_shutter_speed_limit", upper_shutter_limit_param);
-		upper_shutter_limit = (double)upper_shutter_limit_param/1000000.0;
-    	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %.0f", upper_shutter_limit);
+		declare_parameter<double>("shutter_portion", 0.3);
+		get_parameter("shutter_portion", shutter_portion_);
+		RCLCPP_INFO(get_logger(), "shutter_portion: %.2f", shutter_portion_);
 
-		declare_parameter<double>("real_shutter_portion", 0.5);
-		get_parameter("real_shutter_portion", real_shutter_portion);
-    	RCLCPP_INFO(get_logger(), "real shutter portion: %i %", (int)(100*real_shutter_portion));
+		declare_parameter<int>("shutter_max_us", 3000);
+		int shutter_max_us;
+		get_parameter("shutter_max_us", shutter_max_us);
+		shutter_max_s_ = (double)shutter_max_us / 1000000.0;
+		RCLCPP_INFO(get_logger(), "shutter_max: %d µs", shutter_max_us);
+
+		declare_parameter<double>("gain_portion", 0.5);
+		get_parameter("gain_portion", gain_portion_);
+		RCLCPP_INFO(get_logger(), "gain_portion: %.2f", gain_portion_);
 
 		declare_parameter<double>("gain_max", 12.0);
-		get_parameter("gain_max", gain_max);
-    	RCLCPP_INFO(get_logger(), "gain max: %f", gain_max);
+		get_parameter("gain_max", gain_max_);
+		RCLCPP_INFO(get_logger(), "gain_max: %.2f", gain_max_);
+
+		declare_parameter<double>("led_portion", 0.0);
+		get_parameter("led_portion", led_portion_);
+		RCLCPP_INFO(get_logger(), "led_portion: %.2f", led_portion_);
+
+		declare_parameter<double>("led_max", 40.0);
+		get_parameter("led_max", led_max_);
+		RCLCPP_INFO(get_logger(), "led_max: %.2f W", led_max_);
+
+		// Build the ordered slice list from the actuator_order parameter.
+		// Default: shutter first, then gain, then LED.
+		declare_parameter<std::vector<std::string>>("actuator_order",
+		    std::vector<std::string>{"shutter", "gain", "led"});
+		std::vector<std::string> actuator_order_param;
+		get_parameter("actuator_order", actuator_order_param);
+
+		actuator_slices_.clear();
+		for (const auto& name : actuator_order_param) {
+			ActuatorSlice slice;
+			if (name == "shutter") {
+				slice.type      = ActuatorSlice::Type::SHUTTER;
+				slice.portion   = shutter_portion_;
+				slice.max_value = shutter_max_s_;
+			} else if (name == "gain") {
+				slice.type      = ActuatorSlice::Type::GAIN;
+				slice.portion   = gain_portion_;
+				slice.max_value = gain_max_;
+			} else if (name == "led") {
+				slice.type      = ActuatorSlice::Type::LED;
+				slice.portion   = led_portion_;
+				slice.max_value = led_max_;
+			} else {
+				RCLCPP_WARN(get_logger(), "Unknown actuator '%s' in actuator_order — skipping", name.c_str());
+				continue;
+			}
+			actuator_slices_.push_back(slice);
+			RCLCPP_INFO(get_logger(), "  actuator slot %zu: '%s'  portion=%.2f  max=%.2f",
+			            actuator_slices_.size(), name.c_str(), slice.portion, slice.max_value);
+		}
+		// --- End actuator configuration ---
 
 		declare_parameter<double>("kp", 0.02);
 		get_parameter("kp", kp);
@@ -54,16 +95,11 @@ namespace exp_node
 		get_parameter("curve_fit_method", curve_fit_method_);
 		RCLCPP_INFO(get_logger(), "curve_fit_method: %s", curve_fit_method_.c_str());
 
-		declare_parameter<int>("initial_shutter_speed", 5000);
-		int initial_shutter_speed;
-		get_parameter("initial_shutter_speed", initial_shutter_speed);
-		shutter_cur = (double)initial_shutter_speed/1000000.0;	// from microseconds to seconds
-		shutter_at_camera_ = shutter_cur;
-    	RCLCPP_INFO(get_logger(), "initial shutter speed: %i", initial_shutter_speed);
-
-		declare_parameter<double>("initial_gain", 0.0);
-		get_parameter("initial_gain", gain_cur);
-    	RCLCPP_INFO(get_logger(), "initial gain: %.2f", gain_cur);
+		declare_parameter<double>("initial_exposure_level", 0.1);
+		get_parameter("initial_exposure_level", exposure_level_cur_);
+		exposure_level_at_camera_ = exposure_level_cur_;
+		exposure_level_new_       = exposure_level_cur_;
+    	RCLCPP_INFO(get_logger(), "initial_exposure_level: %.3f", exposure_level_cur_);
 
 		declare_parameter<int>("startup_delay", 1);
 		get_parameter("startup_delay", startup_delay);
@@ -130,6 +166,16 @@ namespace exp_node
     	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
 		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
 
+		declare_parameter<std::string>("led_apply_topic", "");
+		std::string led_topic;
+		get_parameter("led_apply_topic", led_topic);
+		if (!led_topic.empty() && led_portion_ > 0.0) {
+			led_pub_ = this->create_publisher<std_msgs::msg::Float32>(led_topic, 10);
+			RCLCPP_INFO(get_logger(), "led apply topic: %s", led_topic.c_str());
+		} else {
+			RCLCPP_INFO(get_logger(), "LED actuator disabled (led_portion=%.2f, topic='%s')", led_portion_, led_topic.c_str());
+		}
+
 		gamma_est_pub_         = this->create_publisher<std_msgs::msg::Float32>("gradient/gamma_est", 10);
 		gradient_pub_          = this->create_publisher<std_msgs::msg::Float32>("gradient/D", 10);
 		gradient_clipped_pub_  = this->create_publisher<std_msgs::msg::Float32>("gradient/D_clipped", 10);
@@ -142,7 +188,15 @@ namespace exp_node
 		get_parameter("shim_update_function", shim_update_function);
 		RCLCPP_INFO(get_logger(), "shim update function: %s", shim_update_function.c_str());
 
-		test_shutter_speed = lower_shutter_limit;
+		declare_parameter<int>("sweep_steps", 100);
+		get_parameter("sweep_steps", sweep_steps_);
+		RCLCPP_INFO(get_logger(), "sweep_steps: %i", sweep_steps_);
+
+		declare_parameter<double>("simple_step_size", 0.01);
+		get_parameter("simple_step_size", simple_step_size_);
+		RCLCPP_INFO(get_logger(), "simple_step_size: %.4f", simple_step_size_);
+
+		test_sweep_step_ = 0;
 		metric_tmp = 0;
 
 		// Initialize shared optimizer state
@@ -188,35 +242,25 @@ namespace exp_node
 			optimizeSimple();
 		}
 
-		if (shutter_new > upper_shutter_limit) {
-			gain_flag = true;
-			shutter_new = upper_shutter_limit;
-		} else if (shutter_new < lower_shutter_limit) {
-			gain_flag = true;
-			shutter_new = lower_shutter_limit;
-		} else {
-			gain_flag = false;
-		}
+		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, 1.0);
+		RCLCPP_INFO(get_logger(), "exposure_level_new: %.4f", exposure_level_new_);
 
-		RCLCPP_INFO(get_logger(), "shutter_new: %.0f us", shutter_new * 1000000.0);
-
-		ChangeParam(shutter_new, 0.0);
-		shutter_cur = shutter_new;
+		ChangeParam(exposure_level_new_);
+		exposure_level_cur_ = exposure_level_new_;
 	}
 
 	void ExpNode::optimizeGradient(){
 		double local_coeff[POLYNOME_DEGREE + 1];
-		double local_shutter_at_camera;
+		double local_exposure_level_at_camera;
 		bool   local_new_camera_data;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) {
 				local_coeff[i] = coeff_[i];
-				//RCLCPP_INFO(get_logger(), "coeff %i: %.2f", i, local_coeff[i]);
 			}
-			local_shutter_at_camera = shutter_at_camera_;
-			local_new_camera_data   = new_camera_data_;
-			new_camera_data_        = false;
+			local_exposure_level_at_camera = exposure_level_at_camera_;
+			local_new_camera_data          = new_camera_data_;
+			new_camera_data_               = false;
 		}
 
 		// Reset gamma estimate whenever a new image has been processed
@@ -242,11 +286,11 @@ namespace exp_node
 		double D_clipped = std::clamp(D, -max_grad, max_grad);
 
 		// Gradient ascent step in gamma space
-		gamma_est_ +=  grad_k * D_clipped;
+		gamma_est_ += grad_k * D_clipped;
 
-		// Convert gamma to shutter multiplicatively: anchor on the shutter speed
-		// that was active when the current curve fit was computed
-		shutter_new = local_shutter_at_camera * gamma_est_;
+		// Scale exposure level multiplicatively, anchored on the level active when
+		// the current curve fit was computed (same idea as before, now in [0,1] space)
+		exposure_level_new_ = local_exposure_level_at_camera * gamma_est_;
 
 		std_msgs::msg::Float32 msg;
 		msg.data = static_cast<float>(gamma_est_);
@@ -258,23 +302,30 @@ namespace exp_node
 	}
 
 	void ExpNode::optimizeSimple(){
-		int    local_gamma_index;
+		int local_gamma_index;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			local_gamma_index = gamma_index;
 		}
-		shutter_new = shutter_cur + 0.5*1000.0*(local_gamma_index - gamma_neutral_index_)/1000000.0;
+		// Step in normalized [0,1] space; simple_step_size_ controls convergence speed
+		exposure_level_new_ = exposure_level_cur_ + simple_step_size_ * (local_gamma_index - gamma_neutral_index_);
 	}
 
 	void ExpNode::optimizeShim(){
 		double local_max_gamma;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
-			local_max_gamma   = max_gamma;
+			local_max_gamma = max_gamma;
 		}
 		alpha = 1.0;
 
-		expCur = log2(7.84 / (shutter_cur * pow(2, gain_cur/6.0)));
+		// Work in a virtual EV space derived from the normalized exposure level:
+		//   EV = log2(1 / exposure_level)   →   exposure_level = 2^(-EV)
+		// Higher EV ↔ lower exposure level ↔ darker image, consistent with the
+		// original formula where higher expCur meant shorter shutter (less light).
+		double level = std::max(exposure_level_cur_, 1e-6);
+		expCur = std::log2(1.0 / level);
+
 		if (shim_update_function == "2014") {
 			expNew = (1 + kp * alpha * (1 - local_max_gamma)) * expCur;
 		} else { // "2018"
@@ -283,7 +334,7 @@ namespace exp_node
 			else                        R =  pow((local_max_gamma - (1.0 - gamma_nudge)), 2) + 1;
 			expNew = (1 + alpha * kp * (R - 1)) * expCur;
 		}
-		shutter_new = 7.84 / pow(2, expNew);
+		exposure_level_new_ = 1.0 / std::pow(2.0, expNew);
 	}
 	
 	void ExpNode::CameraCb (const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
@@ -295,9 +346,13 @@ namespace exp_node
 		// 	return;
 		// }
 
-		//Run a simple shutter speed sweep to see where the true optimum lies
+		//Run a sweep over [0,1] exposure levels to see where the true optimum lies
 		if(do_sweep){
-			if(test_shutter_speed < upper_shutter_limit*1000000.0) {
+			if(test_sweep_step_ < sweep_steps_) {
+				double test_level = (sweep_steps_ > 1)
+					? (double)test_sweep_step_ / (sweep_steps_ - 1)
+					: 0.5;
+
 				cv::Mat image1;
 				try {
 					image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
@@ -310,39 +365,40 @@ namespace exp_node
 				cv::resize(image1, image2, size);
 
 				double test_metric = image_gradient_gamma(image2, 3);
-				RCLCPP_INFO(get_logger(), "test shutter: %i, test metric: %f", test_shutter_speed, test_metric);
+				RCLCPP_INFO(get_logger(), "sweep step: %i/%i (level=%.3f), metric: %f",
+				            test_sweep_step_, sweep_steps_, test_level, test_metric);
 				if(test_metric > metric_tmp) {
-					true_best_shutter_speed = test_shutter_speed;
+					true_best_exposure_level_ = test_level;
 					metric_tmp = test_metric;
 				}
-				RCLCPP_INFO(get_logger(), "best shutter: %i, test metric: %f", true_best_shutter_speed, metric_tmp);
+				RCLCPP_INFO(get_logger(), "best level: %.3f, best metric: %f", true_best_exposure_level_, metric_tmp);
 
 	#ifdef WITH_PLOTTER
 				if (enable_plotter) {
-					sweep_shutters_.push_back((double)test_shutter_speed);
+					sweep_levels_.push_back(test_level);
 					sweep_metrics_.push_back(test_metric);
 				}
 	#endif
 
-				ChangeParam(((double)test_shutter_speed)/1000000.0, 0.0);
-				test_shutter_speed += 1000;
+				ChangeParam(test_level);
+				test_sweep_step_++;
 
 	#ifdef WITH_PLOTTER
-				if (enable_plotter && test_shutter_speed >= (int)(upper_shutter_limit * 1000000.0)) {
+				if (enable_plotter && test_sweep_step_ >= sweep_steps_) {
 					plotter_sweep->clear();
 					plotter_sweep->plot(
-						sweep_shutters_.data(),
+						sweep_levels_.data(),
 						sweep_metrics_.data(),
-						(int)sweep_shutters_.size(),
+						(int)sweep_levels_.size(),
 						'*',
 						2,
 						cv::Scalar(255, 0, 0)
 					);
-					double best_x[1] = { (double)true_best_shutter_speed };
+					double best_x[1] = { true_best_exposure_level_ };
 					double best_y[1] = { metric_tmp };
 					plotter_sweep->plot(best_x, best_y, 1, '*', 6, cv::Scalar(0, 0, 255));
 					plotter_sweep->publish();
-					RCLCPP_INFO(get_logger(), "Sweep done. Best shutter: %i us. Starting periodic republish.", true_best_shutter_speed);
+					RCLCPP_INFO(get_logger(), "Sweep done. Best exposure level: %.3f. Starting periodic republish.", true_best_exposure_level_);
 					sweep_republish_timer_ = create_wall_timer(
 						std::chrono::seconds(1),
 						[this]() { plotter_sweep->publish(); }
@@ -358,8 +414,8 @@ namespace exp_node
 
 		if(!callback_start_time) callback_start_time = std::make_shared<rclcpp::Time>(now());
 		if((now() - *callback_start_time.get()).seconds() < startup_delay) {
-			RCLCPP_INFO(get_logger(), "startup delay: %i; will wait for %f and publishing initial shutter speed of %.0f ms and gain of %.2f",
-			startup_delay, (now() - *callback_start_time.get()).seconds(), shutter_cur * 1000000.0, gain_cur);
+			RCLCPP_INFO(get_logger(), "startup delay: %i; will wait for %f s; current exposure_level: %.3f",
+			startup_delay, (now() - *callback_start_time.get()).seconds(), exposure_level_cur_);
 			return;
 		}
 
@@ -503,7 +559,7 @@ namespace exp_node
 			{
 				std::lock_guard<std::mutex> lock(optimizer_mutex_);
 				for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = coeff[i];
-				shutter_at_camera_ = shutter_cur;
+				exposure_level_at_camera_ = exposure_level_cur_;
 				new_camera_data_   = true;
 				// gamma_index and max_gamma are already updated as members above
 			}
@@ -574,31 +630,46 @@ namespace exp_node
 		return metric;
 	}
 
-	void ExpNode::ChangeParam (double shutter_new, double gain_new) {
-		if(real_shutter_portion > 0.0 && shutter_new > upper_shutter_limit * real_shutter_portion){
-			std_msgs::msg::Int32 shutter_speed_msg;
-			shutter_speed_msg.data = upper_shutter_limit * real_shutter_portion * 1000000; // from seconds to microseconds
-			shutter_speed_us_pub->publish(shutter_speed_msg);
-			RCLCPP_INFO(get_logger(), "used shutter: %i", shutter_speed_msg.data);
+	void ExpNode::ChangeParam(double exposure_level) {
+		exposure_level = std::clamp(exposure_level, 0.0, 1.0);
 
-			std_msgs::msg::Float32 gain_msg;
-			gain_msg.data = gain_max * (shutter_new - upper_shutter_limit * real_shutter_portion)/(upper_shutter_limit - upper_shutter_limit * real_shutter_portion);
-			gain_db_pub->publish(gain_msg);
-			RCLCPP_INFO(get_logger(), "used gain: %f", gain_msg.data);
+		// Walk through the actuator slices in the configured order.
+		// Each slice [cursor, cursor+portion) is mapped to [0, max_value] for that actuator.
+		// Once the optimizer value falls below cursor, that actuator outputs 0.
+		double cursor = 0.0;
+		double shutter_s = 0.0, gain = 0.0, led = 0.0;
+
+		for (const auto& slice : actuator_slices_) {
+			double frac = 0.0;
+			if (slice.portion > 0.0 && exposure_level > cursor) {
+				frac = std::min(exposure_level - cursor, slice.portion) / slice.portion;
+			}
+			double value = frac * slice.max_value;
+			cursor += slice.portion;
+
+			switch (slice.type) {
+				case ActuatorSlice::Type::SHUTTER: shutter_s = value; break;
+				case ActuatorSlice::Type::GAIN:    gain      = value; break;
+				case ActuatorSlice::Type::LED:     led       = value; break;
+			}
 		}
-		else{
-			std_msgs::msg::Int32 shutter_speed_msg;
-			shutter_speed_msg.data = shutter_new * 1000000; // from seconds to microseconds
-			shutter_speed_us_pub->publish(shutter_speed_msg);
 
-			std_msgs::msg::Float32 gain_msg;
-			gain_msg.data = gain_new;
-			gain_db_pub->publish(gain_msg);
+		std_msgs::msg::Int32 shutter_msg;
+		shutter_msg.data = static_cast<int>(shutter_s * 1000000.0);  // s → µs
+		shutter_speed_us_pub->publish(shutter_msg);
+
+		std_msgs::msg::Float32 gain_msg;
+		gain_msg.data = static_cast<float>(gain);
+		gain_db_pub->publish(gain_msg);
+
+		if (led_pub_) {
+			std_msgs::msg::Float32 led_msg;
+			led_msg.data = static_cast<float>(led);
+			led_pub_->publish(led_msg);
 		}
 
-		// std_msgs::msg::Float32 gain_msg;
-		// gain_msg.data = gain_new;
-		// gain_db_pub->publish(gain_msg);
+		RCLCPP_INFO(get_logger(), "ChangeParam: level=%.4f → shutter=%d µs, gain=%.2f dB, led=%.2f W",
+		            exposure_level, shutter_msg.data, gain, led);
 	}
 
     // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings

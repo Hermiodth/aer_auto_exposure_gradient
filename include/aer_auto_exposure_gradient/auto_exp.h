@@ -65,7 +65,7 @@ class ExpNode : public rclcpp::Node {
   void optimizeSimple();
   void optimizeShim();
   double image_gradient_gamma(cv::Mat &src_img, int j);
-  void ChangeParam (double shutter_new, double gain_new);
+  void ChangeParam (double exposure_level);
   
   double * curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y);
   double * curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
@@ -82,13 +82,41 @@ class ExpNode : public rclcpp::Node {
   std::vector<cv::Mat> gamma_luts_;
   cv::Mat lut_metric_;
   double max_metric;
-  double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur;//, gain_new;
-  double upper_shutter_limit, lower_shutter_limit, real_shutter_portion, gain_max;
+  double max_gamma, alpha, expNew, expCur;
+
+  // Normalized optimizer state [0, 1]: 0 = minimum exposure, 1 = maximum exposure
+  double exposure_level_cur_ = 0.1;
+  double exposure_level_new_ = 0.1;
+
+  // Actuator configuration.
+  // Each actuator owns a contiguous slice of the normalized [0,1] optimizer output.
+  // The order and width of the slices are fully configurable via ROS parameters:
+  //   actuator_order: ["shutter", "gain", "led"]   (any permutation, subset, or repetition)
+  //   shutter_portion / shutter_max_ms
+  //   gain_portion    / gain_max
+  //   led_portion     / led_max
+  double shutter_portion_ = 0.3;
+  double shutter_max_s_   = 0.003; // set from shutter_max_us parameter (÷ 1 000 000)
+  double gain_portion_    = 0.5;
+  double gain_max_        = 12.0;
+  double led_portion_     = 0.0;   // 0 = LED disabled
+  double led_max_         = 40.0;  // Watts
+
+  // Runtime-ordered list built from actuator_order parameter.
+  // ChangeParam iterates this vector in sequence, assigning each actuator its slice.
+  struct ActuatorSlice {
+    enum class Type { SHUTTER, GAIN, LED } type;
+    double portion;    // fraction of [0,1] this actuator owns
+    double max_value;  // physical upper limit (s for shutter, dB for gain, W for LED)
+  };
+  std::vector<ActuatorSlice> actuator_slices_;
+
+  double simple_step_size_ = 0.01; // step size for the "simple" optimizer in [0,1] units
+
   int startup_delay;
   double kp; // contorl the speed to convergence
-  double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper 				
+  double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper
   int gamma_index; // index to record the location of the optimum gamma value
-  bool gain_flag = false;
   std::string image_topic;
   std::string shutter_update_method;
   std::string shim_update_function;
@@ -112,6 +140,7 @@ class ExpNode : public rclcpp::Node {
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr shutter_speed_us_pub;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr led_pub_;  // optional, null if disabled
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gamma_est_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gradient_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gradient_clipped_pub_;
@@ -120,15 +149,16 @@ class ExpNode : public rclcpp::Node {
   std::shared_ptr<rclcpp::Time> zeroing_duration;
   std::shared_ptr<rclcpp::Time> last_camera_process_time_;
 
-  int test_shutter_speed;
-  int true_best_shutter_speed;
+  int    test_sweep_step_          = 0;
+  int    sweep_steps_              = 100;
+  double true_best_exposure_level_ = 0.0;
   double metric_tmp;
 
 #ifdef WITH_PLOTTER
   bool enable_plotter;
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
   std::shared_ptr<plotter_ros2::Plotter> plotter_sweep;
-  std::vector<double> sweep_shutters_;
+  std::vector<double> sweep_levels_;
   std::vector<double> sweep_metrics_;
   rclcpp::TimerBase::SharedPtr sweep_republish_timer_;
 #endif
@@ -136,9 +166,9 @@ class ExpNode : public rclcpp::Node {
   int img_proc_loop_hz_;
 
   // Optimizer timer state
-  double coeff_[POLYNOME_DEGREE + 1] = {};  // curve-fit coefficients shared with optimizerCb
-  double shutter_at_camera_ = 0.0;     // shutter speed when last image was captured
-  bool   new_camera_data_   = false;   // flag: new curve-fit data available
+  double coeff_[POLYNOME_DEGREE + 1] = {};     // curve-fit coefficients shared with optimizerCb
+  double exposure_level_at_camera_ = 0.1;      // normalized exposure level when last image captured
+  bool   new_camera_data_          = false;    // flag: new curve-fit data available
   int optimizer_loop_hz_;
   std::mutex optimizer_mutex_;
   rclcpp::TimerBase::SharedPtr optimizer_timer_;
