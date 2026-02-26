@@ -43,7 +43,6 @@
 
 //#include <aer_auto_exposure_gradient/Dehaze.h>
 
-#define GAMMAS_COUNT 7
 #define POLYNOME_DEGREE 2
 
 namespace exp_node {
@@ -68,15 +67,20 @@ class ExpNode : public rclcpp::Node {
   double image_gradient_gamma(cv::Mat &src_img, int j);
   void ChangeParam (double shutter_new, double gain_new);
   
-  double * curveFit (double x[7], double y[7]);
-  double * curveFitLogQuadratic(double x[7], double y[7]);
+  double * curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y);
+  double * curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
   double  findRoots1 (double a[6], double check);
   void generate_LUT ();
   bool check_rate = false;
   double frame_rate_req = 10.0; // maximum 80 fps
 
-  double gamma[GAMMAS_COUNT]={1.0/1.9, 1.0/1.5, 1.0/1.2, 1.0, 1.2, 1.5, 1.9};
-  double metric[GAMMAS_COUNT];
+  std::vector<double> gamma_;
+  std::vector<double> metric_;
+  double gamma_range_ = 1.7;
+  int gamma_num_points_ = 3;
+  int gamma_neutral_index_ = 0;
+  std::vector<cv::Mat> gamma_luts_;
+  cv::Mat lut_metric_;
   double max_metric;
   double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur;//, gain_new;
   double upper_shutter_limit, lower_shutter_limit;
@@ -132,7 +136,7 @@ class ExpNode : public rclcpp::Node {
   int img_proc_loop_hz_;
 
   // Optimizer timer state
-  double coeff_[POLYNOME_DEGREE + 1];  // curve-fit coefficients shared with optimizerCb
+  double coeff_[POLYNOME_DEGREE + 1] = {};  // curve-fit coefficients shared with optimizerCb
   double shutter_at_camera_ = 0.0;     // shutter speed when last image was captured
   bool   new_camera_data_   = false;   // flag: new curve-fit data available
   int optimizer_loop_hz_;

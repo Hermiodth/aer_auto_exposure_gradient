@@ -4,15 +4,6 @@
 
 namespace exp_node 
 {
-	cv::Mat lookUpTable_01 (1, 256, CV_8U);
-	cv::Mat lookUpTable_05 (1, 256, CV_8U);
-	cv::Mat lookUpTable_08 (1, 256, CV_8U);
-	cv::Mat lookUpTable_1(1, 256, CV_8U);
-	cv::Mat lookUpTable_12(1, 256, CV_8U);
-	cv::Mat lookUpTable_15(1, 256, CV_8U);
-	cv::Mat lookUpTable_19(1, 256, CV_8U);
-	cv::Mat lookUpTable_metric(1, 256, CV_8U);
-
 	//ExpNode::ExpNode () : rclcpp::Node("exp_node"), callback_start_time(nullptr)
 
 	void ExpNode::init(std::shared_ptr<rclcpp::Node> node_ptr){
@@ -85,6 +76,34 @@ namespace exp_node
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/gain_param_call", gain_param_call)<<"\n";
         // std::cout <<"the value of gain param is : "<< gain_param_call<<"\n";
         
+		declare_parameter<double>("gamma_range", 1.7);
+		get_parameter("gamma_range", gamma_range_);
+		RCLCPP_INFO(get_logger(), "gamma_range: %.2f", gamma_range_);
+
+		declare_parameter<int>("gamma_num_points", 3);
+		get_parameter("gamma_num_points", gamma_num_points_);
+		RCLCPP_INFO(get_logger(), "gamma_num_points: %i", gamma_num_points_);
+
+		// Generate gamma array in log-space: 1/gamma_range ... 1.0 ... gamma_range
+		gamma_.resize(gamma_num_points_);
+		metric_.resize(gamma_num_points_, 0.0);
+		gamma_luts_.resize(gamma_num_points_);
+		for (int i = 0; i < gamma_num_points_; i++) {
+			gamma_luts_[i] = cv::Mat(1, 256, CV_8U);
+			gamma_[i] = (gamma_num_points_ == 1)
+				? 1.0
+				: std::pow(gamma_range_, 2.0 * i / (gamma_num_points_ - 1) - 1.0);
+		}
+
+		// Find neutral gamma index (closest to 1.0)
+		gamma_neutral_index_ = 0;
+		double min_dist = std::abs(gamma_[0] - 1.0);
+		for (int i = 1; i < gamma_num_points_; i++) {
+			double dist = std::abs(gamma_[i] - 1.0);
+			if (dist < min_dist) { min_dist = dist; gamma_neutral_index_ = i; }
+		}
+		RCLCPP_INFO(get_logger(), "gamma_neutral_index: %i (gamma=%.4f)", gamma_neutral_index_, gamma_[gamma_neutral_index_]);
+
         // cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
 		cv::namedWindow("view"); // comment in implement
 
@@ -120,7 +139,7 @@ namespace exp_node
 
 		// Initialize shared optimizer state
 		max_gamma   = 1.0;
-		gamma_index = 3;   // index of gamma == 1.0 (neutral)
+		gamma_index = gamma_neutral_index_;
 		for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = 0.0;
 
 		int optimizer_period_ms = static_cast<int>(1000.0 / optimizer_loop_hz_);
@@ -236,7 +255,7 @@ namespace exp_node
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			local_gamma_index = gamma_index;
 		}
-		shutter_new = shutter_cur + 0.5*1000.0*(local_gamma_index - 3)/1000000.0;
+		shutter_new = shutter_cur + 0.5*1000.0*(local_gamma_index - gamma_neutral_index_)/1000000.0;
 	}
 
 	void ExpNode::optimizeShim(){
@@ -372,16 +391,16 @@ namespace exp_node
 
 			// loop to call image_gradient_gamma function to obtain image gradient of each gamma
 			// manually adjust the possible gamma values and the number of gamma to use
-			for (int i = 0; i < GAMMAS_COUNT; ++i){
-				metric[i]= image_gradient_gamma(image_current, i)/1000000; // passing the corresponding index
-				//RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma[i], metric[i]); // comment
+			for (int i = 0; i < gamma_num_points_; ++i){
+				metric_[i] = image_gradient_gamma(image_current, i)/1000000.0; // passing the corresponding index
+				//RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma_[i], metric_[i]); // comment
 			}
-							
+
 			// loop to find out the index that correspond to the optimum/maximum gamma value
-			double temp = -1.0;				
-			for(int i = 0; i < GAMMAS_COUNT; i++){
-				if (metric[i] > temp){
-					temp = metric[i];
+			double temp = -1.0;
+			for(int i = 0; i < gamma_num_points_; i++){
+				if (metric_[i] > temp){
+					temp = metric_[i];
 					gamma_index = i;
 				}
 			}
@@ -392,28 +411,28 @@ namespace exp_node
 			// Call the curve fitting function to find out coefficient
 			double * coeff_curve;
 			if (curve_fit_method_ == "log_quadratic")
-				coeff_curve = curveFitLogQuadratic(gamma, metric);
+				coeff_curve = curveFitLogQuadratic(gamma_, metric_);
 			else
-				coeff_curve = curveFit(gamma, metric);
+				coeff_curve = curveFitQuadratic(gamma_, metric_);
 
 	#ifdef WITH_PLOTTER
 		if (enable_plotter) {
 			plotter_gamma->clear();
 			plotter_gamma->plot(
-				gamma,
-				metric,
-				GAMMAS_COUNT,
+				gamma_.data(),
+				metric_.data(),
+				(int)gamma_.size(),
 				'*',
 				2,
 				cv::Scalar(255, 0, 0)
 				);
 
-			const int POINTS_COUNT = 10 * GAMMAS_COUNT;
+			const int POINTS_COUNT = 10 * gamma_num_points_;
 			std::unique_ptr<double[]> x = std::make_unique<double[]>(POINTS_COUNT);
 			std::unique_ptr<double[]> y = std::make_unique<double[]>(POINTS_COUNT);
 
-			double x_min = gamma[0];
-			double x_max = gamma[GAMMAS_COUNT - 1];
+			double x_min = gamma_.front();
+			double x_max = gamma_.back();
 			double step = (x_max - x_min) / (POINTS_COUNT - 1);
 
 			for (int i = 0; i < POINTS_COUNT; i++) {
@@ -449,7 +468,7 @@ namespace exp_node
 				//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
 			}
 
-			max_gamma = findRoots1(coeff, metric[gamma_index]); // calling function findRoots1 to find opt_gamma
+			max_gamma = findRoots1(coeff, metric_[gamma_index]); // calling function findRoots1 to find opt_gamma
 			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
 			
 			double metric_check = 0.0;
@@ -462,15 +481,15 @@ namespace exp_node
 			}
 			//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
-			if (max_gamma < 1.0/1.9 || max_gamma > 1.9)	{
+			if (max_gamma < gamma_.front() || max_gamma > gamma_.back()) {
 				// find out the optimum gamma value associated with highest image gradient
-				max_gamma = gamma[gamma_index];
+				max_gamma = gamma_[gamma_index];
 			}
-			else if (metric[gamma_index] > metric_check) {
-				max_gamma = gamma[gamma_index];
+			else if (metric_[gamma_index] > metric_check) {
+				max_gamma = gamma_[gamma_index];
 			}
 
-			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric[gamma_index], metric[3]);
+			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric_[gamma_index], metric_[gamma_neutral_index_]);
 
 			// Store curve-fit coefficients and gamma result for the optimizer timer
 			{
@@ -500,27 +519,7 @@ namespace exp_node
 		// Using the corresponding index to find out the correct lookuptable to use.
 		// This first lookup table transformation performs normalization of the image to [0,1]
 		// interval and changes the image's gamma.
-		if (j == 0){
-			cv::LUT(src_img, lookUpTable_01, res);
-		}
-		else if (j == 1){
-			cv::LUT(src_img, lookUpTable_05, res);
-		}
-		else if (j == 2){
-			cv::LUT(src_img, lookUpTable_08, res);
-		}
-		else if (j == 3){
-			cv::LUT(src_img, lookUpTable_1, res);
-		}
-		else if (j == 4){
-			cv::LUT(src_img, lookUpTable_12, res);
-		}
-		else if (j == 5){
-			cv::LUT(src_img, lookUpTable_15, res);
-		}
-		else if (j == 6){
-			cv::LUT(src_img, lookUpTable_19, res);
-		}
+		cv::LUT(src_img, gamma_luts_[j], res);
 
 		// Define variables that will be used in the sobel gradient determination function
 		int scale = 1;
@@ -558,7 +557,7 @@ namespace exp_node
 				- 250 -> 254
 				- 255 -> 255
 		*/ 
-		cv::LUT(dst_img, lookUpTable_metric, res);
+		cv::LUT(dst_img, lut_metric_, res);
 		res.convertTo(res, CV_64FC1);
 		
 		double metric= cv::sum(res)[0];
@@ -639,57 +638,23 @@ namespace exp_node
     // }
 
 	void ExpNode::generate_LUT (){
-		
+		double sigma = 255.0 * met_act_thresh;
+		lut_metric_ = cv::Mat(1, 256, CV_8U);
+		uchar* q = lut_metric_.ptr();
 
-		// Need to keep the same gamma values as in imageCallBack
-		double gamma[7]={1.0/1.9, 1.0/1.5, 1.0/1.2 ,1.0, 1.2, 1.5, 1.9}; 		
-		
-		double sigma = 255.0 * met_act_thresh; // The sigma value is used in Shim's 2014 paper as a activation threshhold, the paper used a value of 0.06    
-    	//double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper) 
-
-
-		uchar* p;
-		uchar* q = lookUpTable_metric.ptr();
-
-		for (int j = 0; j < 7; j++){
-			if (j == 0){
-				p = lookUpTable_01.ptr();
-			}
-			else if (j == 1){
-				p = lookUpTable_05.ptr();
-			}
-			else if (j == 2){
-				p = lookUpTable_08.ptr();
-			}
-			else if (j == 3){
-				p = lookUpTable_1.ptr();
-			}
-			else if (j == 4){
-				p = lookUpTable_12.ptr();
-			}
-			else if (j == 5){
-				p = lookUpTable_15.ptr();
-			}
-			else if (j == 6){
-				p = lookUpTable_19.ptr();
-			}
-			
-			for( int i = 0; i < 256; ++i) {
-				p[i] = cv::saturate_cast<uchar>(pow(i / 255.0, 1/gamma[j]) * 255.0);
-	
-				// The following if statement to create a lookup table based on the activation threshold value in Shim's 2014 paper
-				if (i >= sigma){
-					q[i] = 255 * ( ( log10( lamda * ((i-sigma)/255.0) + 1) ) / ( log10( lamda * ((255.0-sigma)/255.0) + 1) ) );
+		for (int j = 0; j < gamma_num_points_; j++){
+			uchar* p = gamma_luts_[j].ptr();
+			for (int i = 0; i < 256; ++i) {
+				p[i] = cv::saturate_cast<uchar>(pow(i / 255.0, 1.0 / gamma_[j]) * 255.0);
+				if (j == 0) { // compute metric LUT only once
+					if (i >= sigma){
+						q[i] = 255 * (log10(lamda * ((i-sigma)/255.0) + 1)) / (log10(lamda * ((255.0-sigma)/255.0) + 1));
+					} else {
+						q[i] = 0;
+					}
 				}
-				else{
-					q[i] = 0;
-				}
-	
 			} // end of for loop with index i
-
 		}// end of for loop with index j
-
-   		
 	} // end of generate_LUT()
 	
 
@@ -816,8 +781,8 @@ namespace exp_node
 
 double ExpNode::findRoots1(double a[3], double check)
 {
-    double lowest_gamma  = gamma[0];
-    double highest_gamma = gamma[GAMMAS_COUNT - 1];
+    double lowest_gamma  = gamma_.front();
+    double highest_gamma = gamma_.back();
     double opt_gamma     = 1.0;
 
     if (std::abs(a[0]) < 1e-10) {
@@ -853,20 +818,20 @@ double ExpNode::findRoots1(double a[3], double check)
     return opt_gamma;
 }
 
-// double * ExpNode::curveFit (double x[7], double y[7])
+// double * ExpNode::curveFit (double x[GAMMAS_COUNT], double y[GAMMAS_COUNT])
 // { static double coff[6];
 //   int i, j, k, n, N;
 
 //   n = 5;
   
-//   Eigen::MatrixXd A(7,6);
-//   Eigen::MatrixXd b(7,1);
+//   Eigen::MatrixXd A(GAMMAS_COUNT,6);
+//   Eigen::MatrixXd b(GAMMAS_COUNT,1);
    
-//   for (i = 0; i <7; i++)
+//   for (i = 0; i < GAMMAS_COUNT; i++)
 //       for (j = 5; j>=0; j--)
 // 	{A(i,5-j) = pow (x[i], j);}
     
-//   for (i = 0; i <7; i++)
+//   for (i = 0; i < GAMMAS_COUNT; i++)
 //    {  b(i,0) = y[i]; } 
   
 //   Eigen::MatrixXd A1 = A.transpose()*A;
@@ -886,21 +851,22 @@ double ExpNode::findRoots1(double a[3], double check)
 // Fits f(x) = a*(ln(x)-b)^2 + c by substituting u=ln(x), yielding A*u^2 + B*u + C.
 // Stored coefficients [A, B, C] encode: A=a, B=-2ab, C=ab^2+c.
 // Optimal x: exp(-B / (2A)).  Derivative df/dx = (2A*ln(x) + B) / x.
-double * ExpNode::curveFitLogQuadratic(double x[7], double y[7])
+double * ExpNode::curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y)
 {
     static double coff[3];
     int i;
+    int n = (int)x.size();
 
-    Eigen::MatrixXd A(7, 3);
-    Eigen::MatrixXd b(7, 1);
+    Eigen::MatrixXd A(n, 3);
+    Eigen::MatrixXd b(n, 1);
 
-    for (i = 0; i < 7; i++) {
+    for (i = 0; i < n; i++) {
         double u = std::log(x[i]);
         A(i, 0) = u * u;  // ln(x)^2
         A(i, 1) = u;      // ln(x)
         A(i, 2) = 1.0;
     }
-    for (i = 0; i < 7; i++) b(i, 0) = y[i];
+    for (i = 0; i < n; i++) b(i, 0) = y[i];
 
     Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
     for (i = 0; i < 3; i++) coff[i] = Q(i);
@@ -908,17 +874,18 @@ double * ExpNode::curveFitLogQuadratic(double x[7], double y[7])
     return coff;
 } // END of function curveFitLogQuadratic()
 
-double * ExpNode::curveFit(double x[7], double y[7])
+double * ExpNode::curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y)
 { 
     static double coff[3];  // Only need 3 coefficients for degree 2
     int i;
+    int n = (int)x.size();
   
     // Create matrices for degree 2 polynomial: y = a*x^2 + b*x + c
-    Eigen::MatrixXd A(7, 3);
-    Eigen::MatrixXd b(7, 1);
+    Eigen::MatrixXd A(n, 3);
+    Eigen::MatrixXd b(n, 1);
    
     // Fill matrix A with [x^2, x, 1] for each point
-    for (i = 0; i < 7; i++)
+    for (i = 0; i < n; i++)
     {
         A(i, 0) = x[i] * x[i];  // x^2
         A(i, 1) = x[i];         // x
@@ -926,7 +893,7 @@ double * ExpNode::curveFit(double x[7], double y[7])
     }
     
     // Fill vector b with y values
-    for (i = 0; i < 7; i++)
+    for (i = 0; i < n; i++)
     {
         b(i, 0) = y[i];
     }

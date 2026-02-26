@@ -23,7 +23,9 @@ def get_processed_launch_objects(context):
             'enable_plotter': True,
             'gamma_x_offset': 0.0,
             'curve_fit_method': 'log_quadratic',
-            'do_sweep': False
+            'do_sweep': False,
+            'gamma_range': 2.0,
+            'gamma_num_points': 5
         }],
         extra_arguments=[{'use_intra_process_comms': True}],
     )
