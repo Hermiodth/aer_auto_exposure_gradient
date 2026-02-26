@@ -83,7 +83,7 @@ class ExpNode : public rclcpp::Node {
   cv::Mat lut_metric_;
   double max_metric;
   double max_gamma, alpha, expNew, expCur, shutter_cur, shutter_new, gain_cur;//, gain_new;
-  double upper_shutter_limit, lower_shutter_limit;
+  double upper_shutter_limit, lower_shutter_limit, real_shutter_portion, gain_max;
   int startup_delay;
   double kp; // contorl the speed to convergence
   double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper 				

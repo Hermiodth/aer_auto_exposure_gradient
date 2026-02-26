@@ -26,6 +26,14 @@ namespace exp_node
 		upper_shutter_limit = (double)upper_shutter_limit_param/1000000.0;
     	RCLCPP_INFO(get_logger(), "upper shutter speed limit: %.0f", upper_shutter_limit);
 
+		declare_parameter<double>("real_shutter_portion", 0.5);
+		get_parameter("real_shutter_portion", real_shutter_portion);
+    	RCLCPP_INFO(get_logger(), "real shutter portion: %i %", (int)(100*real_shutter_portion));
+
+		declare_parameter<double>("gain_max", 12.0);
+		get_parameter("gain_max", gain_max);
+    	RCLCPP_INFO(get_logger(), "gain max: %f", gain_max);
+
 		declare_parameter<double>("kp", 0.02);
 		get_parameter("kp", kp);
     	RCLCPP_INFO(get_logger(), "kp param: %.2f", kp);
@@ -204,7 +212,7 @@ namespace exp_node
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			for (int i = 0; i < POLYNOME_DEGREE + 1; i++) {
 				local_coeff[i] = coeff_[i];
-				RCLCPP_INFO(get_logger(), "coeff %i: %.2f", i, local_coeff[i]);
+				//RCLCPP_INFO(get_logger(), "coeff %i: %.2f", i, local_coeff[i]);
 			}
 			local_shutter_at_camera = shutter_at_camera_;
 			local_new_camera_data   = new_camera_data_;
@@ -567,13 +575,30 @@ namespace exp_node
 	}
 
 	void ExpNode::ChangeParam (double shutter_new, double gain_new) {
-		std_msgs::msg::Int32 shutter_speed_msg;
-		shutter_speed_msg.data = shutter_new * 1000000; // from seconds to microseconds
-		shutter_speed_us_pub->publish(shutter_speed_msg);
+		if(real_shutter_portion > 0.0 && shutter_new > upper_shutter_limit * real_shutter_portion){
+			std_msgs::msg::Int32 shutter_speed_msg;
+			shutter_speed_msg.data = upper_shutter_limit * real_shutter_portion * 1000000; // from seconds to microseconds
+			shutter_speed_us_pub->publish(shutter_speed_msg);
+			RCLCPP_INFO(get_logger(), "used shutter: %i", shutter_speed_msg.data);
 
-		std_msgs::msg::Float32 gain_msg;
-		gain_msg.data = gain_new;
-		gain_db_pub->publish(gain_msg);
+			std_msgs::msg::Float32 gain_msg;
+			gain_msg.data = gain_max * (shutter_new - upper_shutter_limit * real_shutter_portion)/(upper_shutter_limit - upper_shutter_limit * real_shutter_portion);
+			gain_db_pub->publish(gain_msg);
+			RCLCPP_INFO(get_logger(), "used gain: %f", gain_msg.data);
+		}
+		else{
+			std_msgs::msg::Int32 shutter_speed_msg;
+			shutter_speed_msg.data = shutter_new * 1000000; // from seconds to microseconds
+			shutter_speed_us_pub->publish(shutter_speed_msg);
+
+			std_msgs::msg::Float32 gain_msg;
+			gain_msg.data = gain_new;
+			gain_db_pub->publish(gain_msg);
+		}
+
+		// std_msgs::msg::Float32 gain_msg;
+		// gain_msg.data = gain_new;
+		// gain_db_pub->publish(gain_msg);
 	}
 
     // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings

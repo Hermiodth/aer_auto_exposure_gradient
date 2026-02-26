@@ -14,6 +14,9 @@ def get_processed_launch_objects(context):
         name='aer_node',
         namespace=uav_name,
         parameters=[{
+            'upper_shutter_speed_limit': 10000,
+            'real_shutter_portion': 0.3,
+            'gain_max': 12.0,
             'image_topic': f'/{uav_name}/{camera_name}/image_raw',
             'shutter_speed_apply_topic': f'/{uav_name}/expose_us',
             'img_proc_loop_hz': 2,
