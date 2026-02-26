@@ -25,9 +25,9 @@ def get_processed_launch_objects(context):
             # --- Actuator slices: order defines priority (first = used first) ---
             # Portions must sum to <= 1.0; remainder is unused headroom.
             'actuator_order': ['shutter', 'gain', 'led'],
-            'shutter_portion': 0.6,          # 30 % of [0,1] drives shutter
+            'shutter_portion': 0.4,          # 30 % of [0,1] drives shutter
             'shutter_max_us': 5000,           # shutter range: 0 – 3000 µs
-            'gain_portion': 0.4,             # 50 % of [0,1] drives gain
+            'gain_portion': 0.6,             # 50 % of [0,1] drives gain
             'gain_max': 12.0,                # gain range: 0 – 12 dB
             'led_portion': 0.0,              # 20 % of [0,1] drives LED
             'led_max': 40.0,                 # LED range: 0 – 40 W
