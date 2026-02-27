@@ -50,6 +50,10 @@ namespace exp_node
 		std::vector<std::string> actuator_order_param;
 		get_parameter("actuator_order", actuator_order_param);
 
+		// Store originals for proportional scaling when a dynamic limit arrives
+		shutter_max_s_original_   = shutter_max_s_;
+		shutter_portion_original_ = shutter_portion_;
+
 		actuator_slices_.clear();
 		for (const auto& name : actuator_order_param) {
 			ActuatorSlice slice;
@@ -176,6 +180,18 @@ namespace exp_node
 			RCLCPP_INFO(get_logger(), "LED actuator disabled (led_portion=%.2f, topic='%s')", led_portion_, led_topic.c_str());
 		}
 
+		declare_parameter<std::string>("shutter_limit_topic", "");
+		std::string shutter_limit_topic;
+		get_parameter("shutter_limit_topic", shutter_limit_topic);
+		if (!shutter_limit_topic.empty()) {
+			shutter_limit_sub_ = this->create_subscription<std_msgs::msg::Int32>(
+				shutter_limit_topic, 10,
+				std::bind(&ExpNode::shutterLimitCb, this, std::placeholders::_1));
+			RCLCPP_INFO(get_logger(), "shutter limit topic: %s", shutter_limit_topic.c_str());
+		} else {
+			RCLCPP_INFO(get_logger(), "Dynamic shutter limit disabled (shutter_limit_topic not set)");
+		}
+
 		gamma_est_pub_         = this->create_publisher<std_msgs::msg::Float32>("gradient/gamma_est", 10);
 		gradient_pub_          = this->create_publisher<std_msgs::msg::Float32>("gradient/D", 10);
 		gradient_clipped_pub_  = this->create_publisher<std_msgs::msg::Float32>("gradient/D_clipped", 10);
@@ -221,6 +237,11 @@ namespace exp_node
 				600,
 				cv::Scalar(255, 255, 255)
 			);
+			plotter_gamma->setTitle(curve_fit_method_);
+			plotter_gamma->setTitleFontSize(3.5);
+			plotter_gamma->setTickFontSize(2.5);
+			plotter_gamma->setLegendFontSize(3.0);
+
 			plotter_sweep = std::make_shared<plotter_ros2::Plotter>(
 				node_ptr,
 				"plot_sweep",
@@ -228,6 +249,10 @@ namespace exp_node
 				600,
 				cv::Scalar(255, 255, 255)
 			);
+			plotter_sweep->setTitle("gamma sweep");
+			plotter_sweep->setTitleFontSize(3.5);
+			plotter_sweep->setTickFontSize(2.5);
+			plotter_sweep->setLegendFontSize(3.0);
 		}
 #endif
 	}
@@ -392,11 +417,12 @@ namespace exp_node
 						(int)sweep_levels_.size(),
 						'*',
 						2,
-						cv::Scalar(255, 0, 0)
+						cv::Scalar(255, 0, 0),
+						"metric val"
 					);
 					double best_x[1] = { true_best_exposure_level_ };
 					double best_y[1] = { metric_tmp };
-					plotter_sweep->plot(best_x, best_y, 1, '*', 6, cv::Scalar(0, 0, 255));
+					plotter_sweep->plot(best_x, best_y, 1, '*', 6, cv::Scalar(0, 0, 255), "best gamma");
 					plotter_sweep->publish();
 					RCLCPP_INFO(get_logger(), "Sweep done. Best exposure level: %.3f. Starting periodic republish.", true_best_exposure_level_);
 					sweep_republish_timer_ = create_wall_timer(
@@ -488,7 +514,8 @@ namespace exp_node
 				(int)gamma_.size(),
 				'*',
 				2,
-				cv::Scalar(255, 0, 0)
+				cv::Scalar(255, 0, 0),
+				"metric"
 				);
 
 			const int POINTS_COUNT = 10 * gamma_num_points_;
@@ -518,7 +545,8 @@ namespace exp_node
 				POINTS_COUNT,
 				'-',
 				2,
-				cv::Scalar(0, 0, 255)
+				cv::Scalar(0, 0, 255),
+				curve_fit_method_
 				);
 
 			plotter_gamma->publish();
@@ -630,6 +658,31 @@ namespace exp_node
 		return metric;
 	}
 
+	void ExpNode::shutterLimitCb(const std_msgs::msg::Int32::ConstSharedPtr& msg) {
+		int new_max_us = msg->data;
+		if (new_max_us <= 0) {
+			RCLCPP_WARN(get_logger(), "Received invalid shutter limit: %d µs — ignoring", new_max_us);
+			return;
+		}
+
+		double new_max_s  = new_max_us / 1000000.0;
+		double new_portion = shutter_portion_original_ * (new_max_s / shutter_max_s_original_);
+		new_portion = std::clamp(new_portion, 0.0, shutter_portion_original_);
+
+		std::lock_guard<std::mutex> lock(actuator_mutex_);
+		shutter_max_s_   = new_max_s;
+		shutter_portion_ = new_portion;
+		for (auto& slice : actuator_slices_) {
+			if (slice.type == ActuatorSlice::Type::SHUTTER) {
+				slice.max_value = new_max_s;
+				slice.portion   = new_portion;
+				break;
+			}
+		}
+		RCLCPP_INFO(get_logger(), "Shutter limit updated: max=%d µs (%.4f s), portion=%.3f",
+		            new_max_us, new_max_s, new_portion);
+	}
+
 	void ExpNode::ChangeParam(double exposure_level) {
 		exposure_level = std::clamp(exposure_level, 0.0, 1.0);
 
@@ -639,6 +692,7 @@ namespace exp_node
 		double cursor = 0.0;
 		double shutter_s = 0.0, gain = 0.0, led = 0.0;
 
+		std::lock_guard<std::mutex> lock(actuator_mutex_);
 		for (const auto& slice : actuator_slices_) {
 			double frac = 0.0;
 			if (slice.portion > 0.0 && exposure_level > cursor) {

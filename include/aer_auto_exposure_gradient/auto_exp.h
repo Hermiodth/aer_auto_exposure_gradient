@@ -66,6 +66,7 @@ class ExpNode : public rclcpp::Node {
   void optimizeShim();
   double image_gradient_gamma(cv::Mat &src_img, int j);
   void ChangeParam (double exposure_level);
+  void shutterLimitCb(const std_msgs::msg::Int32::ConstSharedPtr &msg);
   
   double * curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y);
   double * curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
@@ -95,8 +96,10 @@ class ExpNode : public rclcpp::Node {
   //   shutter_portion / shutter_max_ms
   //   gain_portion    / gain_max
   //   led_portion     / led_max
-  double shutter_portion_ = 0.3;
-  double shutter_max_s_   = 0.003; // set from shutter_max_us parameter (÷ 1 000 000)
+  double shutter_portion_          = 0.3;
+  double shutter_max_s_            = 0.003; // set from shutter_max_us parameter (÷ 1 000 000)
+  double shutter_portion_original_ = 0.3;   // initial value, used for proportional scaling
+  double shutter_max_s_original_   = 0.003; // initial value, used for proportional scaling
   double gain_portion_    = 0.5;
   double gain_max_        = 12.0;
   double led_portion_     = 0.0;   // 0 = LED disabled
@@ -141,6 +144,7 @@ class ExpNode : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr shutter_speed_us_pub;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gain_db_pub;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr led_pub_;  // optional, null if disabled
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr shutter_limit_sub_; // dynamic shutter upper limit (µs)
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gamma_est_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gradient_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr gradient_clipped_pub_;
@@ -171,6 +175,7 @@ class ExpNode : public rclcpp::Node {
   bool   new_camera_data_          = false;    // flag: new curve-fit data available
   int optimizer_loop_hz_;
   std::mutex optimizer_mutex_;
+  std::mutex actuator_mutex_;  // protects actuator_slices_, shutter_max_s_, shutter_portion_
   rclcpp::TimerBase::SharedPtr optimizer_timer_;
 
   // Gradient optimizer state (optimizer thread only, no mutex needed)

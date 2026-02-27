@@ -57,7 +57,7 @@ def get_processed_launch_objects(context):
             'shutter_update_method': 'gradient',
             'curve_fit_method': 'log_quadratic',    # 'quadratic' | 'log_quadratic'
             'gamma_range': 2.0,
-            'gamma_num_points': 5,
+            'gamma_num_points': 9,
             'gamma_x_offset': 0.0,
 
             # --- Sweep (debug) ---
@@ -66,6 +66,8 @@ def get_processed_launch_objects(context):
 
             # --- Plotter (requires WITH_PLOTTER build flag) ---
             'enable_plotter': True,
+
+            'shutter_limit_topic': f'/{uav_name}/shutter_limit'
         }],
         extra_arguments=[{'use_intra_process_comms': True}],
     )
