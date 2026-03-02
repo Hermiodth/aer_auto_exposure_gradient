@@ -18,9 +18,12 @@ In order to use the package follow these instructions:
 
 Click on the image below for video.
 
-
 [![](http://img.youtube.com/vi/vGS4-n6Pf30/0.jpg)](http://www.youtube.com/watch?v=vGS4-n6Pf30 "Video")
 
+## Detailed algorithm description
 
+The algorithm has two parts - metric and optimizer. The metric is taken from the original repo, created by the Shim et. al. The optimizer has been changed from the Shim's to the more simple gradient descent optimizer, Original Shim's optimizer can be enabled instead of the our gradient-descent one, but it was not thoroughly tested, since the gradient descent based optimizer works well. Also the function used for fitting the effect of simulated gamma correction value on the metric has been changed from the Shim's fifth order polynomial to the more predictable log-quadratic function.
 
+Output of the optimizer has also been modified and expanded. The optimizer is now internally working in the 0 to 1 range. That value is them mapped to the three possible "actuators" - camera's shutter speed (a.k.a. exposure time), camera's gain and special one - desired output power of the auxiliary LED illuminator. This reflects the intended usage - Visual-inertial odometry on the UAV in challenging lighting conditions, including complete darkness.
 
+![Effect of changing gamma correction value on the metric.](gamma_plot.png "Effect of changing gamma correction value on the metric.")
