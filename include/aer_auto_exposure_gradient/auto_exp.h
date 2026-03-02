@@ -88,6 +88,7 @@ class ExpNode : public rclcpp::Node {
   // Normalized optimizer state [0, 1]: 0 = minimum exposure, 1 = maximum exposure
   double exposure_level_cur_ = 0.1;
   double exposure_level_new_ = 0.1;
+  double exposure_level_max_;
 
   // Actuator configuration.
   // Each actuator owns a contiguous slice of the normalized [0,1] optimizer output.
@@ -98,8 +99,6 @@ class ExpNode : public rclcpp::Node {
   //   led_portion     / led_max
   double shutter_portion_          = 0.3;
   double shutter_max_s_            = 0.003; // set from shutter_max_us parameter (÷ 1 000 000)
-  double shutter_portion_original_ = 0.3;   // initial value, used for proportional scaling
-  double shutter_max_s_original_   = 0.003; // initial value, used for proportional scaling
   double gain_portion_    = 0.5;
   double gain_max_        = 12.0;
   double led_portion_     = 0.0;   // 0 = LED disabled

@@ -1,7 +1,5 @@
 #include "aer_auto_exposure_gradient/auto_exp.h"
 
-
-
 namespace exp_node 
 {
 	//ExpNode::ExpNode () : rclcpp::Node("exp_node"), callback_start_time(nullptr)
@@ -50,10 +48,7 @@ namespace exp_node
 		std::vector<std::string> actuator_order_param;
 		get_parameter("actuator_order", actuator_order_param);
 
-		// Store originals for proportional scaling when a dynamic limit arrives
-		shutter_max_s_original_   = shutter_max_s_;
-		shutter_portion_original_ = shutter_portion_;
-
+		exposure_level_max_ = 0.0;
 		actuator_slices_.clear();
 		for (const auto& name : actuator_order_param) {
 			ActuatorSlice slice;
@@ -73,6 +68,7 @@ namespace exp_node
 				RCLCPP_WARN(get_logger(), "Unknown actuator '%s' in actuator_order — skipping", name.c_str());
 				continue;
 			}
+			exposure_level_max_ += slice.portion;
 			actuator_slices_.push_back(slice);
 			RCLCPP_INFO(get_logger(), "  actuator slot %zu: '%s'  portion=%.2f  max=%.2f",
 			            actuator_slices_.size(), name.c_str(), slice.portion, slice.max_value);
@@ -267,8 +263,8 @@ namespace exp_node
 			optimizeSimple();
 		}
 
-		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, 1.0);
-		RCLCPP_INFO(get_logger(), "exposure_level_new: %.4f", exposure_level_new_);
+		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, exposure_level_max_);
+		//RCLCPP_INFO(get_logger(), "exposure_level_new: %.4f", exposure_level_new_);
 
 		ChangeParam(exposure_level_new_);
 		exposure_level_cur_ = exposure_level_new_;
@@ -306,7 +302,7 @@ namespace exp_node
 			// df/dx = 2A*x + B (quadratic)
 			D = 2 * local_coeff[0] * (gamma_est_ - gamma_x_offset_) + local_coeff[1];
 		}
-		RCLCPP_INFO(get_logger(), "GRADIENT at gamma=%.3f: %.2f", gamma_est_, D);
+		//RCLCPP_INFO(get_logger(), "GRADIENT at gamma=%.3f: %.2f", gamma_est_, D);
 		double max_grad = 0.5;
 		double D_clipped = std::clamp(D, -max_grad, max_grad);
 
@@ -666,25 +662,28 @@ namespace exp_node
 		}
 
 		double new_max_s  = new_max_us / 1000000.0;
-		double new_portion = shutter_portion_original_ * (new_max_s / shutter_max_s_original_);
-		new_portion = std::clamp(new_portion, 0.0, shutter_portion_original_);
+		double change = new_max_s / shutter_max_s_;
+		double new_portion = shutter_portion_ * change;
 
 		std::lock_guard<std::mutex> lock(actuator_mutex_);
 		shutter_max_s_   = new_max_s;
 		shutter_portion_ = new_portion;
+		exposure_level_max_ = 0.0;
 		for (auto& slice : actuator_slices_) {
 			if (slice.type == ActuatorSlice::Type::SHUTTER) {
 				slice.max_value = new_max_s;
 				slice.portion   = new_portion;
-				break;
 			}
+			exposure_level_max_ += slice.portion;
 		}
+		RCLCPP_INFO(get_logger(), "exposure_level_max_: %f", exposure_level_max_);
+		//RCLCPP_INFO(get_logger(), "exposure_level_max_: %f", exposure_level_max_);
 		RCLCPP_INFO(get_logger(), "Shutter limit updated: max=%d µs (%.4f s), portion=%.3f",
 		            new_max_us, new_max_s, new_portion);
 	}
 
 	void ExpNode::ChangeParam(double exposure_level) {
-		exposure_level = std::clamp(exposure_level, 0.0, 1.0);
+		//exposure_level = std::clamp(exposure_level, 0.0, 1.0);
 
 		// Walk through the actuator slices in the configured order.
 		// Each slice [cursor, cursor+portion) is mapped to [0, max_value] for that actuator.
@@ -706,7 +705,15 @@ namespace exp_node
 				case ActuatorSlice::Type::GAIN:    gain      = value; break;
 				case ActuatorSlice::Type::LED:     led       = value; break;
 			}
+
+			switch (slice.type) {
+				case ActuatorSlice::Type::SHUTTER: RCLCPP_INFO(get_logger(), "shutter: %f", slice.portion); break;
+				case ActuatorSlice::Type::GAIN:    RCLCPP_INFO(get_logger(), "gain:    %f", slice.portion); break;
+				case ActuatorSlice::Type::LED:     RCLCPP_INFO(get_logger(), "led:     %f", slice.portion); break;
+			}
 		}
+
+		RCLCPP_INFO(get_logger(), "exposure_level_max_: %f" ,exposure_level_max_);
 
 		std_msgs::msg::Int32 shutter_msg;
 		shutter_msg.data = static_cast<int>(shutter_s * 1000000.0);  // s → µs
@@ -723,7 +730,7 @@ namespace exp_node
 		}
 
 		RCLCPP_INFO(get_logger(), "ChangeParam: level=%.4f → shutter=%d µs, gain=%.2f dB, led=%.2f W",
-		            exposure_level, shutter_msg.data, gain, led);
+		           exposure_level, shutter_msg.data, gain, led);
 	}
 
     // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings
