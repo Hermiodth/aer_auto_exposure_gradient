@@ -68,3 +68,18 @@ When a UAV is moving too fast or too close to a surface, images can become too b
 Note: In the example above, the sum of all output portions is 1.5, so the internal optimizer output will range between 0 and 1.5. If the exposure time limit is increased via the topic — say, doubled from the default 5000 µs to 10 000 µs — its portion changes to 1.0, so the optimizer's internal output will range between 0 and 2.0.
 
 Note: If your algorithm is sensitive to image brightness changes, you can preprocess your images using histogram equalization. This eliminates almost all flickering caused by changes in camera parameters or illuminator power, so this algorithm only reduces noise in that case.
+
+## Possible Future Improvements
+
+This is only the most basic implementation, using a simple metric — the sum of 
+gradients. There is room for improvement. Possible directions:
+
+1. Adding a percentile-based metric instead of a simple gradient sum, as described in [Zhang et al. 2017](https://ieeexplore.ieee.org/document/7989449). This makes the metric robust to noise by focusing on the mid-to-high gradient pixels, rather than being skewed by the large number of near-zero gradient pixels in flat or smooth regions.
+
+2. Adding entropy weighting of the gradients, as described in [Kim et al. 2018](https://ieeexplore.ieee.org/document/8462881). This would make the saturation handling more principled — rather than the current approach of simply ignoring saturated regions, the metric would explicitly penalize them, preventing strong gradients near partially saturated areas from distorting the optimal exposure estimate.
+
+3. Replacing the log-quadratic gamma simulation with a photometric response function calibrated to the specific camera, as described in [Zhang et al. 2017](https://ieeexplore.ieee.org/document/7989449). This would produce a more accurate prediction of how changing the exposure time affects the metric, potentially improving convergence speed and accuracy of the optimizer, especially in high dynamic range environments.
+
+4. Automatic calibration of the output actuator gains, to avoid oscillations when the algorithm transitions between actuators (e.g. from shutter speed to gain, or from gain to LED illuminator). Currently, the portions and max values must be manually tuned to ensure similar effective gains across actuators. An automated calibration process could estimate these by briefly sweeping each actuator and measuring the effect on image brightness.
+
+5. Automatic linking of the optimizer loop frequency and gradient step size to the metric computation loop frequency. Currently, optimizer_loop_hz and grad_k must be manually retuned whenever img_proc_loop_hz is changed. These could be automatically scaled relative to the metric computation frequency to reduce the manual tuning burden.
