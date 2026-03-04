@@ -22,6 +22,9 @@ namespace exp_node
 		declare_parameter<int>("shutter_max_us", 3000);
 		int shutter_max_us;
 		get_parameter("shutter_max_us", shutter_max_us);
+		if (shutter_max_us <= 0) {
+			RCLCPP_ERROR(get_logger(), "shutter_max_us must be > 0 (got %d) — dynamic shutter limit topic will not work correctly", shutter_max_us);
+		}
 		shutter_max_s_ = (double)shutter_max_us / 1000000.0;
 		RCLCPP_INFO(get_logger(), "shutter_max: %d µs", shutter_max_us);
 
@@ -107,10 +110,18 @@ namespace exp_node
 
 		declare_parameter<int>("img_proc_loop_hz", 1);
 		get_parameter("img_proc_loop_hz", img_proc_loop_hz_);
+		if (img_proc_loop_hz_ <= 0) {
+			RCLCPP_WARN(get_logger(), "img_proc_loop_hz must be > 0, clamping to 1");
+			img_proc_loop_hz_ = 1;
+		}
     	RCLCPP_INFO(get_logger(), "img_proc_loop_hz: %i", img_proc_loop_hz_);
 
 		declare_parameter<int>("optimizer_loop_hz", 10);
 		get_parameter("optimizer_loop_hz", optimizer_loop_hz_);
+		if (optimizer_loop_hz_ <= 0) {
+			RCLCPP_WARN(get_logger(), "optimizer_loop_hz must be > 0, clamping to 10 (it is recommended that optimizer_loop_hz >= 10 * img_proc_loop_hz)");
+			optimizer_loop_hz_ = 10;
+		}
 		RCLCPP_INFO(get_logger(), "optimizer loop hz: %i", optimizer_loop_hz_);
 
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
@@ -308,6 +319,7 @@ namespace exp_node
 
 		// Gradient ascent step in gamma space
 		gamma_est_ += grad_k * D_clipped;
+		gamma_est_ = std::max(gamma_est_, 1e-6); // guard against log(0) / log(negative)
 
 		// Scale exposure level multiplicatively, anchored on the level active when
 		// the current curve fit was computed (same idea as before, now in [0,1] space)
@@ -667,6 +679,10 @@ namespace exp_node
 		}
 
 		double new_max_s  = new_max_us / 1000000.0;
+		if (shutter_max_s_ <= 0.0) {
+			RCLCPP_WARN(get_logger(), "shutter_max_s_ is zero — cannot compute proportional update, ignoring");
+			return;
+		}
 		double change = new_max_s / shutter_max_s_;
 		double new_portion = shutter_portion_ * change;
 
