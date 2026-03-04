@@ -7,7 +7,6 @@
 #include <iostream>
 #include <vector>
 #include <libgen.h>
-#include <math.h>
 #include <mutex>
 #include <sys/time.h>
 #include <string>
@@ -50,15 +49,10 @@ namespace exp_node {
 class ExpNode : public rclcpp::Node {
  public:
 
-  ExpNode(const rclcpp::NodeOptions & options) : rclcpp::Node("exp_node", options), callback_start_time(nullptr), it_(nullptr) {
-    auto node_ptr = std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node*){});
-    init(node_ptr);
-  }
-  void init(std::shared_ptr<rclcpp::Node> node_ptr);
+  explicit ExpNode(const rclcpp::NodeOptions & options);
 
  private:
- 
-  void gnulot(double * coeff_curve);
+
   void CameraCb(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
   void optimizerCb();
   void optimizeGradient();
@@ -72,8 +66,6 @@ class ExpNode : public rclcpp::Node {
   std::array<double, 3> curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
   double findRoots1(double a[3]);
   void generate_LUT ();
-  bool check_rate = false;
-  double frame_rate_req = 10.0; // maximum 80 fps
 
   std::vector<double> gamma_;
   std::vector<double> metric_;
@@ -82,8 +74,10 @@ class ExpNode : public rclcpp::Node {
   int gamma_neutral_index_ = 0;
   std::vector<cv::Mat> gamma_luts_;
   cv::Mat lut_metric_;
-  double max_metric;
-  double max_gamma, alpha, expNew, expCur;
+  double max_gamma  = 1.0;
+  double alpha      = 1.0;
+  double expNew     = 0.0;
+  double expCur     = 0.0;
 
   // Normalized optimizer state [0, 1]: 0 = minimum exposure, 1 = maximum exposure
   double exposure_level_cur_ = 0.1;
@@ -116,8 +110,8 @@ class ExpNode : public rclcpp::Node {
   double simple_step_size_ = 0.01; // step size for the "simple" optimizer in [0,1] units
 
   int startup_delay;
-  double kp; // contorl the speed to convergence
-  double d = 0.1, R; // parameters used in the nonliear function in Shim's 2018 paper
+  double kp = 0.02;
+  double R  = 1.0; // parameter used in the nonlinear function in Shim's 2018 paper
   int gamma_index; // index to record the location of the optimum gamma value
   std::string image_topic;
   std::string shutter_update_method;
@@ -137,7 +131,6 @@ class ExpNode : public rclcpp::Node {
   bool do_sweep;
 
   //ros::NodeHandle nh_;
-  std::shared_ptr<image_transport::ImageTransport> it_;
   image_transport::Subscriber sub_camera_;
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr shutter_speed_us_pub;
@@ -158,7 +151,7 @@ class ExpNode : public rclcpp::Node {
   double metric_tmp;
 
 #ifdef WITH_PLOTTER
-  bool enable_plotter;
+  bool enable_plotter = false;
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
   std::shared_ptr<plotter_ros2::Plotter> plotter_sweep;
   std::vector<double> sweep_levels_;

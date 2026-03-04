@@ -2,10 +2,9 @@
 
 namespace exp_node 
 {
-	//ExpNode::ExpNode () : rclcpp::Node("exp_node"), callback_start_time(nullptr)
-
-	void ExpNode::init(std::shared_ptr<rclcpp::Node> node_ptr){
-		it_ = std::make_shared<image_transport::ImageTransport>(node_ptr);
+	ExpNode::ExpNode(const rclcpp::NodeOptions & options)
+	: rclcpp::Node("exp_node", options), callback_start_time(nullptr)
+	{
 
 		declare_parameter<std::string>("image_topic", "camera/image_raw");
 		get_parameter("image_topic", image_topic);
@@ -160,7 +159,10 @@ namespace exp_node
 		RCLCPP_INFO(get_logger(), "gamma_neutral_index: %i (gamma=%.4f)", gamma_neutral_index_, gamma_[gamma_neutral_index_]);
 
     	generate_LUT();
-    	sub_camera_ = it_->subscribe(image_topic, 1, &ExpNode::CameraCb, this);
+    	sub_camera_ = image_transport::create_subscription(
+    		this, image_topic,
+    		[this](const sensor_msgs::msg::Image::ConstSharedPtr & msg){ CameraCb(msg); },
+    		"raw");
 
 		declare_parameter<std::string>("shutter_speed_apply_topic", "expose_us");
 		std::string shutter_speed_topic;
@@ -235,7 +237,7 @@ namespace exp_node
 		get_parameter("enable_plotter", enable_plotter);
 		if (enable_plotter) {
 			plotter_gamma = std::make_shared<plotter_ros2::Plotter>(
-				node_ptr,
+				this,
 				"plot_example",
 				800,
 				600,
@@ -247,7 +249,7 @@ namespace exp_node
 			plotter_gamma->setLegendFontSize(3.0);
 
 			plotter_sweep = std::make_shared<plotter_ros2::Plotter>(
-				node_ptr,
+				this,
 				"plot_sweep",
 				800,
 				600,
@@ -461,8 +463,6 @@ namespace exp_node
 		}
 
 		try {
-			check_rate = false;
-
 			cv::Mat image_capture;
 			try {
 				image_capture = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
@@ -614,11 +614,10 @@ namespace exp_node
 	double ExpNode::image_gradient_gamma(cv::Mat &src_img, int j) {
 		// Accepting the raw image and the index of gamma value as input argument
 
-		cv::Mat res = src_img.clone();
+		cv::Mat res;
 		///////////////////// The following computes the image gradient of the gamma-processed image /////////////////////
 		cv::Mat grad_x, grad_y;
 		cv::Mat abs_grad_x, abs_grad_y, dst_img;
-		cv::Mat weight_ori = cv::Mat::ones(res.rows,res.cols,CV_64FC1);
 
 		// Using the corresponding index to find out the correct lookuptable to use.
 		// This first lookup table transformation performs normalization of the image to [0,1]
@@ -628,7 +627,7 @@ namespace exp_node
 		// Define variables that will be used in the sobel gradient determination function
 		int scale = 1;
 		int delta = 0;
-		int ddepth = CV_8UC1;
+		int ddepth = CV_16S; // signed 16-bit so convertScaleAbs captures both gradient polarities
 
 		// Call the Sobel function to determine gradient image in x and y direction
 
