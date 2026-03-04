@@ -267,7 +267,10 @@ namespace exp_node
 		//RCLCPP_INFO(get_logger(), "exposure_level_new: %.4f", exposure_level_new_);
 
 		ChangeParam(exposure_level_new_);
-		exposure_level_cur_ = exposure_level_new_;
+		{
+			std::lock_guard<std::mutex> lock(optimizer_mutex_);
+			exposure_level_cur_ = exposure_level_new_;
+		}
 	}
 
 	void ExpNode::optimizeGradient(){
