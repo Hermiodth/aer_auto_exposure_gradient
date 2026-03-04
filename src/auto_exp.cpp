@@ -148,9 +148,6 @@ namespace exp_node
 		}
 		RCLCPP_INFO(get_logger(), "gamma_neutral_index: %i (gamma=%.4f)", gamma_neutral_index_, gamma_[gamma_neutral_index_]);
 
-        // cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
-		cv::namedWindow("view"); // comment in implement
-
     	generate_LUT();
     	sub_camera_ = it_->subscribe(image_topic, 1, &ExpNode::CameraCb, this);
 
