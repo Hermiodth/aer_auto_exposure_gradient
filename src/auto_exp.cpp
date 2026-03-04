@@ -484,10 +484,11 @@ namespace exp_node
 
 			// loop to find out the index that correspond to the optimum/maximum gamma value
 			double temp = -1.0;
+			int local_gamma_index = 0;
 			for(int i = 0; i < gamma_num_points_; i++){
 				if (metric_[i] > temp){
 					temp = metric_[i];
-					gamma_index = i;
+					local_gamma_index = i;
 				}
 			}
 
@@ -556,36 +557,39 @@ namespace exp_node
 				//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
 			}
 
-			max_gamma = findRoots1(coeff, metric_[gamma_index]); // calling function findRoots1 to find opt_gamma
-			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
-			
+			double local_max_gamma = findRoots1(coeff, metric_[local_gamma_index]); // calling function findRoots1 to find opt_gamma
+			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", local_max_gamma);
+
 			double metric_check = 0.0;
 			if (curve_fit_method_ == "log_quadratic") {
-				double u = std::log(max_gamma);
+				double u = std::log(local_max_gamma);
 				metric_check = coeff[0] * u * u + coeff[1] * u + coeff[2];
 			} else {
 				for (int i = 0; i < POLYNOME_DEGREE + 1; i++)
-					metric_check += coeff[i] * pow(max_gamma, POLYNOME_DEGREE - i);
+					metric_check += coeff[i] * pow(local_max_gamma, POLYNOME_DEGREE - i);
 			}
 			//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
-			if (max_gamma < gamma_.front() || max_gamma > gamma_.back()) {
+			if (local_max_gamma < gamma_.front() || local_max_gamma > gamma_.back()) {
 				// find out the optimum gamma value associated with highest image gradient
-				max_gamma = gamma_[gamma_index];
+				local_max_gamma = gamma_[local_gamma_index];
 			}
-			else if (metric_[gamma_index] > metric_check) {
-				max_gamma = gamma_[gamma_index];
+			else if (metric_[local_gamma_index] > metric_check) {
+				local_max_gamma = gamma_[local_gamma_index];
 			}
 
-			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric_[gamma_index], metric_[gamma_neutral_index_]);
+			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric_[local_gamma_index], metric_[gamma_neutral_index_]);
 
-			// Store curve-fit coefficients and gamma result for the optimizer timer
+			// Store curve-fit coefficients and gamma result for the optimizer timer.
+			// All shared state written together under the lock to prevent data races
+			// with the optimizer timer thread.
 			{
 				std::lock_guard<std::mutex> lock(optimizer_mutex_);
 				for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = coeff[i];
 				exposure_level_at_camera_ = exposure_level_cur_;
-				new_camera_data_   = true;
-				// gamma_index and max_gamma are already updated as members above
+				new_camera_data_          = true;
+				gamma_index               = local_gamma_index;
+				max_gamma                 = local_max_gamma;
 			}
 
 			last_camera_process_time_ = std::make_shared<rclcpp::Time>(now());
