@@ -1,6 +1,7 @@
 #ifndef EXP_ROS_NODE_H_
 #define EXP_ROS_NODE_H_
 
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -67,9 +68,9 @@ class ExpNode : public rclcpp::Node {
   void ChangeParam (double exposure_level);
   void shutterLimitCb(const std_msgs::msg::Int32::ConstSharedPtr &msg);
   
-  double * curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y);
-  double * curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
-  double  findRoots1 (double a[6], double check);
+  std::array<double, 3> curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y);
+  std::array<double, 3> curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
+  double findRoots1(double a[3]);
   void generate_LUT ();
   bool check_rate = false;
   double frame_rate_req = 10.0; // maximum 80 fps

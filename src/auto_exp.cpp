@@ -509,7 +509,7 @@ namespace exp_node
 ///////////////////////////////////////////////////  Curve Fitting  ///////////////////////////////////////////////
 
 			// Call the curve fitting function to find out coefficient
-			double * coeff_curve;
+			std::array<double, 3> coeff_curve;
 			if (curve_fit_method_ == "log_quadratic")
 				coeff_curve = curveFitLogQuadratic(gamma_, metric_);
 			else
@@ -565,12 +565,11 @@ namespace exp_node
 
 			double coeff[POLYNOME_DEGREE+1];
 			for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
-					
-				coeff[i] = *(coeff_curve+i);
+				coeff[i] = coeff_curve[i];
 				//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
 			}
 
-			double local_max_gamma = findRoots1(coeff, metric_[local_gamma_index]); // calling function findRoots1 to find opt_gamma
+			double local_max_gamma = findRoots1(coeff); // calling function findRoots1 to find opt_gamma
 			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", local_max_gamma);
 
 			double metric_check = 0.0;
@@ -754,67 +753,6 @@ namespace exp_node
 		           exposure_level, shutter_msg.data, gain, led);
 	}
 
-    // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings
-    // {
-    //     dynamic_reconfigure::ReconfigureRequest srv_req;
-    //     dynamic_reconfigure::ReconfigureResponse srv_resp;
-    //     dynamic_reconfigure::BoolParameter acq_fps_bool; //enable "acquisition_frame_rate_enable"
-    //     dynamic_reconfigure::StrParameter gain_auto_str,exp_auto_str,wb_auto_str; // Auto gain, white balance and exposure off
-    //     dynamic_reconfigure::DoubleParameter acq_fps_double, exp_time_double, gain_double, exp_auto_upper_double;
-    //     dynamic_reconfigure::Config conf;
-
-	// // set constant frame rate
-    //     acq_fps_bool.name = "acquisition_frame_rate_enable"; // maximum frame rate: 80 fps
-    //     acq_fps_bool.value = true;
-    //     conf.bools.push_back(acq_fps_bool);
-
-	// // trun off built-in auto exposure
-    //     exp_auto_str.name = "exposure_auto"; // shut off auto exposure
-    //     exp_auto_str.value = "Off";
-    //     conf.strs.push_back(exp_auto_str);
-
-	// // turn off auto gain
-    //     gain_auto_str.name = "auto_gain"; // shut off auto gain adjustment
-    //     gain_auto_str.value = "Off";
-    //     conf.strs.push_back(gain_auto_str);
-
-	// /*
-    //     wb_auto_str.name = "auto_white_balance"; // shut off auto white balance
-    //     wb_auto_str.value = "Off";
-    //     conf.strs.push_back(wb_auto_str);
-	// */
-
-	// // Set required frame rate
-    //     acq_fps_double.name = "acquisition_frame_rate"; // maximum frame rate: 80 fps
-    //     acq_fps_double.value = frame_rate_req; //change frame rate as needed
-    //     conf.doubles.push_back(acq_fps_double);
-
-	// // Update exposure time
-    //     exp_time_double.name = "exposure_time"; // Maximum range: 0 to 32754 [unit: micro-seconds]
-    //     exp_time_double.value = shutter_new; ///////////////////////////// using function return value
-    //     conf.doubles.push_back(exp_time_double);
-
-	// // Update gain
-    //     gain_double.name = "gain"; // Maximum range: -10 to 30
-    //     gain_double.value = gain_new; ///////////////////////////////////// using function return value
-    //     conf.doubles.push_back(gain_double);
-
-	// // calculate and set highest possible exposure time (the camera has a limit of 32754 [unit: microsecond])
-    //     exp_auto_upper_double.name = "auto_exposure_time_upper_limit";
-	// if ((1.0/frame_rate_req)*1000000.0 > 32754.0){        
-	// 	exp_auto_upper_double.value = 32754.0;
-	// }
-	// else{
-	// 	exp_auto_upper_double.value = 1000000.0/frame_rate_req;
-	// }
-    //     conf.doubles.push_back(exp_auto_upper_double);
-
-    //     srv_req.config = conf;
-
-    //     //ros::service::call("/blackfly/spinnaker_camera_nodelet/set_parameters",srv_req, srv_resp);
-	// ros::service::call(service_call,srv_req, srv_resp);
-    // }
-
 	void ExpNode::generate_LUT (){
 		double sigma = 255.0 * met_act_thresh;
 		lut_metric_ = cv::Mat(1, 256, CV_8U);
@@ -834,259 +772,107 @@ namespace exp_node
 			} // end of for loop with index i
 		}// end of for loop with index j
 	} // end of generate_LUT()
-	
 
-	// double  ExpNode::findRoots1 (double a[6], double check)
-	// {
-	// 	static double roots1[4];
-	// 	double ad[5];
-	// 	double opt_gamma = 997.0, met_temp;
-	// 	ad[4] = 5 * a[0];
-	// 	ad[3] = 4 * a[1];
-	// 	ad[2] = 3 * a[2];
-	// 	ad[1] = 2 * a[3];
-	// 	ad[0] = a[4];
-	// 	Eigen::MatrixXd companion_mat (4, 4);
+	double ExpNode::findRoots1(double a[3])
+	{
+		double lowest_gamma  = gamma_.front();
+		double highest_gamma = gamma_.back();
+		double opt_gamma     = 1.0;
 
-	// 	for (int n = 0; n < 4; n++)
-	// 	{
-	// 		for (int m = 0; m < 4; m++)
-	// 			{
-	// 			 if (n == m + 1)
-	// 			 	companion_mat (n, m) = 1.0;
-	// 			 if (m == 4 - 1)
-	// 				companion_mat (n, m) = -ad[n] / ad[4];
-	// 		} // end of for loop with index m
-	// 	} // end of for loop with index n
+		if (std::abs(a[0]) < 1e-10) {
+			RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid fit");
+			return 1.0;
+		}
 
-	// 	Eigen::MatrixXcd eig = companion_mat.eigenvalues ();
-	// 	for (int i = 0; i < 4; i++)
-	// 	{
-	// 	 	met_temp = 0.0; // met_temp is used to check if the root can return a larger metric      
-	// 	 	if (std::imag (eig (i)) == 0) // if statement to determine whether or not root is true
-	// 	  	{
-	// 	  		roots1[i] = std::real(eig (i));	 
-	// 	  	}
-	// 	  	else
-	// 	  	{
+		if (curve_fit_method_ == "log_quadratic") {
+			// Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
+			// Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
+			if (a[0] > 0) {
+				// Convex in log-space: use derivative direction at x=1 (ln(1)=0)
+				RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
+				return (a[1] >= 0) ? 1.05 : 0.95;
+			}
+			double ln_opt = -a[1] / (2.0 * a[0]);
+			opt_gamma = std::exp(ln_opt);
+		} else {
+			// Quadratic: A*x^2 + B*x + C, maximum at x = -B/(2A).
+			double derrivative_at_gamma_1 = 2 * a[0] + a[1];
+			if (a[0] > 0) {
+				RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
+				return (derrivative_at_gamma_1 >= 0) ? 1.05 : 0.95;
+			}
+			opt_gamma = -a[1] / (2.0 * a[0]);
+		}
 
-	// 	  		roots1[i] = 1000; // if root is imaginary, assign an overshoot value
-	// 	  	}
-	// 	  if ((roots1[i] < 2.0) && (roots1[i] > 0.5)) //check if the calculated root is within range (.5,2)
-	// 	  	{
-	// 	  		for (int j=0; j<6; j++) 
-	// 	  		{
-	// 	  			met_temp = met_temp + a[j] * pow(roots1[i],5-j);
-	// 	  		}
-	// 	  		if (met_temp > check) // if the root can return a metric that is greater than current metric
-	// 	  		{
-	// 	  			opt_gamma = roots1[i];
-	// 	  			RCLCPP_INFO(get_logger(), "in function maximum metric is: %f", met_temp);
-	// 	  		}
-	// 	  	}
-	// 		RCLCPP_INFO(get_logger(), "eig(i) is: %f, ima: %f", std::real(eig(i)), std::imag(eig(i)));
-	// 	} // end of for loop with index i
-	// 	return opt_gamma;
-	// } // END of function of findRoots1()
+		if (opt_gamma < lowest_gamma || opt_gamma > highest_gamma) {
+			RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", opt_gamma);
+			return (opt_gamma > highest_gamma) ? 1.05 : 0.95;
+		}
 
-// double ExpNode::findRoots1(double a[3], double check)
-// {
-// 	double lowest_gamma = gamma[0];
-// 	double highest_gamma = gamma[GAMMAS_COUNT-1];
-// 	double neutral_gamma = 1.0;
+		return opt_gamma;
+	}
 
-//     // double opt_gamma = 997.0, met_temp;
-// 	double opt_gamma = 1.0, met_temp;
-    
-//     // Derivative of quadratic ax^2 + bx + c is: 2ax + b
-//     // Setting derivative = 0: 2ax + b = 0
-//     // Root: x = -b/(2a)
-    
-//     double derivative_root;
-    
-//     // Check if we have a valid quadratic (a[0] != 0)
-//     if (std::abs(a[0]) < 1e-10)
-//     {
-//         RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid quadratic");
-//         return opt_gamma;
-//     }
+	// Fits f(x) = a*(ln(x)-b)^2 + c by substituting u=ln(x), yielding A*u^2 + B*u + C.
+	// Stored coefficients [A, B, C] encode: A=a, B=-2ab, C=ab^2+c.
+	// Optimal x: exp(-B / (2A)).  Derivative df/dx = (2A*ln(x) + B) / x.
+	std::array<double, 3> ExpNode::curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y)
+	{
+		int i;
+		int n = (int)x.size();
 
-// 	// If the polynomial is convex, we are way off from the optimal gamma.
-// 	// We need to just pick the gamma with the largest metric.
-// 	double derrivative_at_gamma_1 = 2*a[0] + a[1];
-// 	RCLCPP_INFO(get_logger(), "derrivative_at_gamma_1: %f", derrivative_at_gamma_1);
-// 	if (a[0] > 0) {
-// 		// First, determine if the function is increasing or decreasing
-// 		RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX!");
-// 		// we have to multipoly it by the derrivative itself because it would oscillate arround the peak
-// 		// if(derrivative_at_gamma_1 >= 0) return highest_gamma;
-// 		// if(derrivative_at_gamma_1 < 0) return lowest_gamma;
-// 		return 1.0;
-// 	}
-    
-//     // Calculate the critical point (where derivative = 0)
-//     derivative_root = -a[1] / (2.0 * a[0]);
-    
-//     //RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
-    
-//     // Check if the root is within range (0.5, 2.0)
-//     if ((derivative_root <= highest_gamma) && (derivative_root >= lowest_gamma))
-//     {
-//         // Evaluate the polynomial at this point
-//         met_temp = a[0] * derivative_root * derivative_root + 
-//                    a[1] * derivative_root + 
-//                    a[2];
-        
-//         //RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
-        
-//         // Check if this gives a better metric than current
-//         //if (met_temp > check)	// this can cause some jumping of the opt_gamma value; we rather choose little bit suboptimal, but stable value
-//         {
-//             opt_gamma = derivative_root;
-//             //RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
-//             //           met_temp, opt_gamma);
-//         }
-//     }
-//     else
-//     {
-//         RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", derivative_root);
-// 		// if(derivative_root >= highest_gamma) opt_gamma = highest_gamma;
-// 		// if(derivative_root <= lowest_gamma) opt_gamma = lowest_gamma;
-//     }
-    
-//     return opt_gamma;
-// } // END of function findRoots1()
+		Eigen::MatrixXd A(n, 3);
+		Eigen::MatrixXd b(n, 1);
 
-double ExpNode::findRoots1(double a[3], double check)
-{
-    double lowest_gamma  = gamma_.front();
-    double highest_gamma = gamma_.back();
-    double opt_gamma     = 1.0;
+		for (i = 0; i < n; i++) {
+			double u = std::log(std::max(x[i], 1e-10)); // guard against log(0) or log(negative)
+			A(i, 0) = u * u;  // ln(x)^2
+			A(i, 1) = u;      // ln(x)
+			A(i, 2) = 1.0;
+		}
+		for (i = 0; i < n; i++) b(i, 0) = y[i];
 
-    if (std::abs(a[0]) < 1e-10) {
-        RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid fit");
-        return 1.0;
-    }
+		Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
+		std::array<double, 3> coeff;
+		for (i = 0; i < 3; i++) coeff[i] = Q(i);
 
-    if (curve_fit_method_ == "log_quadratic") {
-        // Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
-        // Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
-        if (a[0] > 0) {
-            // Convex in log-space: use derivative direction at x=1 (ln(1)=0)
-            RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
-            return (a[1] >= 0) ? 1.05 : 0.95;
-        }
-        double ln_opt = -a[1] / (2.0 * a[0]);
-        opt_gamma = std::exp(ln_opt);
-    } else {
-        // Quadratic: A*x^2 + B*x + C, maximum at x = -B/(2A).
-        double derrivative_at_gamma_1 = 2 * a[0] + a[1];
-        if (a[0] > 0) {
-            RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
-            return (derrivative_at_gamma_1 >= 0) ? 1.05 : 0.95;
-        }
-        opt_gamma = -a[1] / (2.0 * a[0]);
-    }
+		return coeff;
+	} // END of function curveFitLogQuadratic()
 
-    if (opt_gamma < lowest_gamma || opt_gamma > highest_gamma) {
-        RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", opt_gamma);
-        return (opt_gamma > highest_gamma) ? 1.05 : 0.95;
-    }
+	std::array<double, 3> ExpNode::curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y)
+	{
+		int i;
+		int n = (int)x.size();
 
-    return opt_gamma;
-}
+		// Create matrices for degree 2 polynomial: y = a*x^2 + b*x + c
+		Eigen::MatrixXd A(n, 3);
+		Eigen::MatrixXd b(n, 1);
 
-// double * ExpNode::curveFit (double x[GAMMAS_COUNT], double y[GAMMAS_COUNT])
-// { static double coff[6];
-//   int i, j, k, n, N;
+		// Fill matrix A with [x^2, x, 1] for each point
+		for (i = 0; i < n; i++)
+		{
+			A(i, 0) = x[i] * x[i];  // x^2
+			A(i, 1) = x[i];         // x
+			A(i, 2) = 1.0;          // constant term
+		}
 
-//   n = 5;
-  
-//   Eigen::MatrixXd A(GAMMAS_COUNT,6);
-//   Eigen::MatrixXd b(GAMMAS_COUNT,1);
-   
-//   for (i = 0; i < GAMMAS_COUNT; i++)
-//       for (j = 5; j>=0; j--)
-// 	{A(i,5-j) = pow (x[i], j);}
-    
-//   for (i = 0; i < GAMMAS_COUNT; i++)
-//    {  b(i,0) = y[i]; } 
-  
-//   Eigen::MatrixXd A1 = A.transpose()*A;
-//   Eigen::MatrixXd b1 = A.transpose()*b; 
-//   //Eigen::MatrixXd Q =A1.colPivHouseholderQr().solve(b1);
-//   Eigen::MatrixXd Q =A1.inverse()*b1;
+		// Fill vector b with y values
+		for (i = 0; i < n; i++)
+		{
+			b(i, 0) = y[i];
+		}
 
-//   for(i=0; i<n+1; i++)
-//   {  coff[i] = Q(i);
-// 	//std::cout << "\nx is: " << x[i] << "Q is: " << coff[i] << std::endl;
-// }
+		// Solve least squares problem directly (no normal equations)
+		Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
 
-//   return coff;
-   
-// } // END of function curveFit()
+		// Extract coefficients
+		std::array<double, 3> coeff;
+		for (i = 0; i < 3; i++)
+		{
+			coeff[i] = Q(i);
+		}
 
-// Fits f(x) = a*(ln(x)-b)^2 + c by substituting u=ln(x), yielding A*u^2 + B*u + C.
-// Stored coefficients [A, B, C] encode: A=a, B=-2ab, C=ab^2+c.
-// Optimal x: exp(-B / (2A)).  Derivative df/dx = (2A*ln(x) + B) / x.
-double * ExpNode::curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y)
-{
-    static double coff[3];
-    int i;
-    int n = (int)x.size();
-
-    Eigen::MatrixXd A(n, 3);
-    Eigen::MatrixXd b(n, 1);
-
-    for (i = 0; i < n; i++) {
-        double u = std::log(x[i]);
-        A(i, 0) = u * u;  // ln(x)^2
-        A(i, 1) = u;      // ln(x)
-        A(i, 2) = 1.0;
-    }
-    for (i = 0; i < n; i++) b(i, 0) = y[i];
-
-    Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
-    for (i = 0; i < 3; i++) coff[i] = Q(i);
-
-    return coff;
-} // END of function curveFitLogQuadratic()
-
-double * ExpNode::curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y)
-{ 
-    static double coff[3];  // Only need 3 coefficients for degree 2
-    int i;
-    int n = (int)x.size();
-  
-    // Create matrices for degree 2 polynomial: y = a*x^2 + b*x + c
-    Eigen::MatrixXd A(n, 3);
-    Eigen::MatrixXd b(n, 1);
-   
-    // Fill matrix A with [x^2, x, 1] for each point
-    for (i = 0; i < n; i++)
-    {
-        A(i, 0) = x[i] * x[i];  // x^2
-        A(i, 1) = x[i];         // x
-        A(i, 2) = 1.0;          // constant term
-    }
-    
-    // Fill vector b with y values
-    for (i = 0; i < n; i++)
-    {
-        b(i, 0) = y[i];
-    }
-  
-    // Solve least squares problem directly (no normal equations)
-    Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
-
-    // Extract coefficients
-    for (i = 0; i < 3; i++)
-    {
-        coff[i] = Q(i);
-    }
-
-    return coff;
-} // END of function curveFit()
+		return coeff;
+	} // END of function curveFitQuadratic()
 
 } //END OF THE WHOLE NAMESPACE
 
