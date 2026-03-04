@@ -379,6 +379,7 @@ namespace exp_node
 					image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
 				} catch (cv_bridge::Exception& e) {
 					RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+					return;
 				}
 
 				cv::Mat image2;
@@ -454,7 +455,7 @@ namespace exp_node
 			try {
 				image_capture = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
 			} catch (cv_bridge::Exception& e) {
-				RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+				throw; // let the outer catch handle it and skip further processing
 			}
 
 			cv::Mat image_current;
