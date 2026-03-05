@@ -69,19 +69,19 @@ class ExpNode : public rclcpp::Node {
 
   std::vector<double> gamma_;
   std::vector<double> metric_;
-  double gamma_range_ = 1.7;
-  int gamma_num_points_ = 3;
-  int gamma_neutral_index_ = 0;
+  double gamma_range_;
+  int gamma_num_points_;
+  int gamma_neutral_index_;
   std::vector<cv::Mat> gamma_luts_;
   cv::Mat lut_metric_;
-  double max_gamma  = 1.0;
-  double alpha      = 1.0;
-  double expNew     = 0.0;
-  double expCur     = 0.0;
+  double max_gamma;
+  double alpha;
+  double expNew;
+  double expCur;
 
   // Normalized optimizer state [0, 1]: 0 = minimum exposure, 1 = maximum exposure
-  double exposure_level_cur_ = 0.1;
-  double exposure_level_new_ = 0.1;
+  double exposure_level_cur_;
+  double exposure_level_new_;
   double exposure_level_max_;
 
   // Actuator configuration.
@@ -91,12 +91,12 @@ class ExpNode : public rclcpp::Node {
   //   shutter_portion / shutter_max_ms
   //   gain_portion    / gain_max
   //   led_portion     / led_max
-  double shutter_portion_          = 0.3;
-  double shutter_max_s_            = 0.003; // set from shutter_max_us parameter (÷ 1 000 000)
-  double gain_portion_    = 0.5;
-  double gain_max_        = 12.0;
-  double led_portion_     = 0.0;   // 0 = LED disabled
-  double led_max_         = 40.0;  // Watts
+  double shutter_portion_;
+  double shutter_max_s_;           // set from shutter_max_us parameter (÷ 1 000 000)
+  double gain_portion_;
+  double gain_max_;
+  double led_portion_;             // 0 = LED disabled
+  double led_max_;                 // Watts
 
   // Runtime-ordered list built from actuator_order parameter.
   // ChangeParam iterates this vector in sequence, assigning each actuator its slice.
@@ -107,11 +107,11 @@ class ExpNode : public rclcpp::Node {
   };
   std::vector<ActuatorSlice> actuator_slices_;
 
-  double simple_step_size_ = 0.01; // step size for the "simple" optimizer in [0,1] units
+  double simple_step_size_;        // step size for the "simple" optimizer in [0,1] units
 
   int startup_delay;
-  double kp = 0.02;
-  double R  = 1.0; // parameter used in the nonlinear function in Shim's 2018 paper
+  double kp;
+  double R;  // parameter used in the nonlinear function in Shim's 2018 paper
   int gamma_index; // index to record the location of the optimum gamma value
   std::string image_topic;
   std::string shutter_update_method;
@@ -121,7 +121,7 @@ class ExpNode : public rclcpp::Node {
   //std::string gain_param_call = "camera/spinnaker_camera_nodelet/gain";
 
   double grad_k;
-  double gamma_x_offset_ = 0.0;
+  double gamma_x_offset_;
   std::string curve_fit_method_;
 
   // Parameters that correlated to Shim's Gradient Metric
@@ -145,13 +145,13 @@ class ExpNode : public rclcpp::Node {
   std::shared_ptr<rclcpp::Time> zeroing_duration;
   std::shared_ptr<rclcpp::Time> last_camera_process_time_;
 
-  int    test_sweep_step_          = 0;
-  int    sweep_steps_              = 100;
+  int    test_sweep_step_;
+  int    sweep_steps_;
   double true_best_exposure_level_ = 0.0;
   double metric_tmp;
 
 #ifdef WITH_PLOTTER
-  bool enable_plotter = false;
+  bool enable_plotter;
   std::shared_ptr<plotter_ros2::Plotter> plotter_gamma;
   std::shared_ptr<plotter_ros2::Plotter> plotter_sweep;
   std::vector<double> sweep_levels_;
@@ -162,8 +162,8 @@ class ExpNode : public rclcpp::Node {
   int img_proc_loop_hz_;
 
   // Optimizer timer state
-  double coeff_[POLYNOME_DEGREE + 1] = {};     // curve-fit coefficients shared with optimizerCb
-  double exposure_level_at_camera_ = 0.1;      // normalized exposure level when last image captured
+  double coeff_[POLYNOME_DEGREE + 1];           // curve-fit coefficients shared with optimizerCb
+  double exposure_level_at_camera_;            // normalized exposure level when last image captured
   bool   new_camera_data_          = false;    // flag: new curve-fit data available
   int optimizer_loop_hz_;
   std::mutex optimizer_mutex_;

@@ -136,6 +136,10 @@ namespace exp_node
 
 		declare_parameter<int>("gamma_num_points", 3);
 		get_parameter("gamma_num_points", gamma_num_points_);
+		if (gamma_num_points_ < 3) {
+			RCLCPP_WARN(get_logger(), "gamma_num_points must be >= 3 for quadratic fit (got %d) — clamping to 3", gamma_num_points_);
+			gamma_num_points_ = 3;
+		}
 		RCLCPP_INFO(get_logger(), "gamma_num_points: %i", gamma_num_points_);
 
 		// Generate gamma array in log-space: 1/gamma_range ... 1.0 ... gamma_range
@@ -273,7 +277,12 @@ namespace exp_node
 			optimizeSimple();
 		}
 
-		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, exposure_level_max_);
+		double local_exposure_level_max;
+		{
+			std::lock_guard<std::mutex> lock(actuator_mutex_);
+			local_exposure_level_max = exposure_level_max_;
+		}
+		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, local_exposure_level_max);
 		//RCLCPP_INFO(get_logger(), "exposure_level_new: %.4f", exposure_level_new_);
 
 		ChangeParam(exposure_level_new_);
@@ -338,19 +347,23 @@ namespace exp_node
 
 	void ExpNode::optimizeSimple(){
 		int local_gamma_index;
+		double local_exposure_level_cur;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			local_gamma_index = gamma_index;
+			local_exposure_level_cur = exposure_level_cur_;
 		}
 		// Step in normalized [0,1] space; simple_step_size_ controls convergence speed
-		exposure_level_new_ = exposure_level_cur_ + simple_step_size_ * (local_gamma_index - gamma_neutral_index_);
+		exposure_level_new_ = local_exposure_level_cur + simple_step_size_ * (local_gamma_index - gamma_neutral_index_);
 	}
 
 	void ExpNode::optimizeShim(){
 		double local_max_gamma;
+		double local_exposure_level_cur;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			local_max_gamma = max_gamma;
+			local_exposure_level_cur = exposure_level_cur_;
 		}
 		alpha = 1.0;
 
@@ -358,7 +371,7 @@ namespace exp_node
 		//   EV = log2(1 / exposure_level)   →   exposure_level = 2^(-EV)
 		// Higher EV ↔ lower exposure level ↔ darker image, consistent with the
 		// original formula where higher expCur meant shorter shutter (less light).
-		double level = std::max(exposure_level_cur_, 1e-6);
+		double level = std::max(local_exposure_level_cur, 1e-6);
 		expCur = std::log2(1.0 / level);
 
 		if (shim_update_function == "2014") {
@@ -696,7 +709,6 @@ namespace exp_node
 			exposure_level_max_ += slice.portion;
 		}
 		RCLCPP_INFO(get_logger(), "exposure_level_max_: %f", exposure_level_max_);
-		//RCLCPP_INFO(get_logger(), "exposure_level_max_: %f", exposure_level_max_);
 		RCLCPP_INFO(get_logger(), "Shutter limit updated: max=%d µs (%.4f s), portion=%.3f",
 		            new_max_us, new_max_s, new_portion);
 	}
