@@ -25,8 +25,8 @@ def get_processed_launch_objects(context):
             # --- Actuator slices: order defines priority (first = used first) ---
             # Portions does not have to add up to the 100%.
             'actuator_order': ['shutter', 'gain', 'led'],
-            'shutter_portion': 0.5,          # 50 % of [0,1] drives shutter
-            'shutter_max_us': 5000,           # shutter range: 0 – 5000 µs
+            'shutter_portion': 1.0,          # 50 % of [0,1] drives shutter
+            'shutter_max_us': 10000,           # shutter range: 0 – 5000 µs
             'gain_portion': 0.5,             # 50 % of [0,1] drives gain
             'gain_max': 12.0,                # gain range: 0 – 12 dB
             'led_portion': 0.5,              # 50 % of [0,1] drives LED
@@ -57,7 +57,7 @@ def get_processed_launch_objects(context):
             'shutter_update_method': 'gradient',
             'curve_fit_method': 'log_quadratic',    # 'quadratic' | 'log_quadratic'
             'gamma_range': 2.0,
-            'gamma_num_points': 9,
+            'gamma_num_points': 5,
             'gamma_x_offset': 0.0,
 
             # --- Sweep (debug) ---

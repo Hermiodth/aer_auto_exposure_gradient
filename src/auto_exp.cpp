@@ -2,10 +2,9 @@
 
 namespace exp_node 
 {
-	//ExpNode::ExpNode () : rclcpp::Node("exp_node"), callback_start_time(nullptr)
-
-	void ExpNode::init(std::shared_ptr<rclcpp::Node> node_ptr){
-		it_ = std::make_shared<image_transport::ImageTransport>(node_ptr);
+	ExpNode::ExpNode(const rclcpp::NodeOptions & options)
+	: rclcpp::Node("exp_node", options), callback_start_time(nullptr)
+	{
 
 		declare_parameter<std::string>("image_topic", "camera/image_raw");
 		get_parameter("image_topic", image_topic);
@@ -22,6 +21,9 @@ namespace exp_node
 		declare_parameter<int>("shutter_max_us", 3000);
 		int shutter_max_us;
 		get_parameter("shutter_max_us", shutter_max_us);
+		if (shutter_max_us <= 0) {
+			RCLCPP_ERROR(get_logger(), "shutter_max_us must be > 0 (got %d) — dynamic shutter limit topic will not work correctly", shutter_max_us);
+		}
 		shutter_max_s_ = (double)shutter_max_us / 1000000.0;
 		RCLCPP_INFO(get_logger(), "shutter_max: %d µs", shutter_max_us);
 
@@ -91,10 +93,6 @@ namespace exp_node
 		get_parameter("gamma_x_offset", gamma_x_offset_);
     	RCLCPP_INFO(get_logger(), "gamma_x_offset: %.2f", gamma_x_offset_);
 
-		declare_parameter<std::string>("curve_fit_method", "quadratic");
-		get_parameter("curve_fit_method", curve_fit_method_);
-		RCLCPP_INFO(get_logger(), "curve_fit_method: %s", curve_fit_method_.c_str());
-
 		declare_parameter<double>("initial_exposure_level", 0.1);
 		get_parameter("initial_exposure_level", exposure_level_cur_);
 		exposure_level_at_camera_ = exposure_level_cur_;
@@ -107,10 +105,18 @@ namespace exp_node
 
 		declare_parameter<int>("img_proc_loop_hz", 1);
 		get_parameter("img_proc_loop_hz", img_proc_loop_hz_);
+		if (img_proc_loop_hz_ <= 0) {
+			RCLCPP_WARN(get_logger(), "img_proc_loop_hz must be > 0, clamping to 1");
+			img_proc_loop_hz_ = 1;
+		}
     	RCLCPP_INFO(get_logger(), "img_proc_loop_hz: %i", img_proc_loop_hz_);
 
 		declare_parameter<int>("optimizer_loop_hz", 10);
 		get_parameter("optimizer_loop_hz", optimizer_loop_hz_);
+		if (optimizer_loop_hz_ <= 0) {
+			RCLCPP_WARN(get_logger(), "optimizer_loop_hz must be > 0, clamping to 10 (it is recommended that optimizer_loop_hz >= 10 * img_proc_loop_hz)");
+			optimizer_loop_hz_ = 10;
+		}
 		RCLCPP_INFO(get_logger(), "optimizer loop hz: %i", optimizer_loop_hz_);
 
         // std::cout <<"the  image topic given in launch file? :"<< nh.getParam("/service_call", service_call)<<"\n";
@@ -126,6 +132,10 @@ namespace exp_node
 
 		declare_parameter<int>("gamma_num_points", 3);
 		get_parameter("gamma_num_points", gamma_num_points_);
+		if (gamma_num_points_ < 3) {
+			RCLCPP_WARN(get_logger(), "gamma_num_points must be >= 3 (got %d) — clamping to 3", gamma_num_points_);
+			gamma_num_points_ = 3;
+		}
 		RCLCPP_INFO(get_logger(), "gamma_num_points: %i", gamma_num_points_);
 
 		// Generate gamma array in log-space: 1/gamma_range ... 1.0 ... gamma_range
@@ -148,11 +158,11 @@ namespace exp_node
 		}
 		RCLCPP_INFO(get_logger(), "gamma_neutral_index: %i (gamma=%.4f)", gamma_neutral_index_, gamma_[gamma_neutral_index_]);
 
-        // cv::namedWindow("view", cv2::CV_WINDOW_NORMAL); // comment in implement
-		cv::namedWindow("view"); // comment in implement
-
     	generate_LUT();
-    	sub_camera_ = it_->subscribe(image_topic, 1, &ExpNode::CameraCb, this);
+    	sub_camera_ = image_transport::create_subscription(
+    		this, image_topic,
+    		[this](const sensor_msgs::msg::Image::ConstSharedPtr & msg){ CameraCb(msg); },
+    		"raw");
 
 		declare_parameter<std::string>("shutter_speed_apply_topic", "expose_us");
 		std::string shutter_speed_topic;
@@ -227,19 +237,19 @@ namespace exp_node
 		get_parameter("enable_plotter", enable_plotter);
 		if (enable_plotter) {
 			plotter_gamma = std::make_shared<plotter_ros2::Plotter>(
-				node_ptr,
+				this,
 				"plot_example",
 				800,
 				600,
 				cv::Scalar(255, 255, 255)
 			);
-			plotter_gamma->setTitle(curve_fit_method_);
+			plotter_gamma->setTitle("log_quadratic");
 			plotter_gamma->setTitleFontSize(3.5);
 			plotter_gamma->setTickFontSize(2.5);
 			plotter_gamma->setLegendFontSize(3.0);
 
 			plotter_sweep = std::make_shared<plotter_ros2::Plotter>(
-				node_ptr,
+				this,
 				"plot_sweep",
 				800,
 				600,
@@ -263,11 +273,19 @@ namespace exp_node
 			optimizeSimple();
 		}
 
-		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, exposure_level_max_);
+		double local_exposure_level_max;
+		{
+			std::lock_guard<std::mutex> lock(actuator_mutex_);
+			local_exposure_level_max = exposure_level_max_;
+		}
+		exposure_level_new_ = std::clamp(exposure_level_new_, 0.0, local_exposure_level_max);
 		//RCLCPP_INFO(get_logger(), "exposure_level_new: %.4f", exposure_level_new_);
 
 		ChangeParam(exposure_level_new_);
-		exposure_level_cur_ = exposure_level_new_;
+		{
+			std::lock_guard<std::mutex> lock(optimizer_mutex_);
+			exposure_level_cur_ = exposure_level_new_;
+		}
 	}
 
 	void ExpNode::optimizeGradient(){
@@ -291,23 +309,17 @@ namespace exp_node
 
 		// Gradient of the fitted curve evaluated at the current gamma estimate.
 		// gamma_est_ changes each optimizer step, so D changes too.
-		// gamma_x_offset_ shifts the convergence point (in x-space for quadratic,
-		// in log-x-space for log_quadratic).
-		double D;
-		if (curve_fit_method_ == "log_quadratic") {
-			// df/dx = (2A*ln(x) + B) / x; offset applied in log-space
-			D = (2 * local_coeff[0] * (std::log(gamma_est_) - gamma_x_offset_) + local_coeff[1])
-			    / gamma_est_;
-		} else {
-			// df/dx = 2A*x + B (quadratic)
-			D = 2 * local_coeff[0] * (gamma_est_ - gamma_x_offset_) + local_coeff[1];
-		}
+		// gamma_x_offset_ shifts the convergence point in log-x-space.
+		// df/dx = (2A*ln(x) + B) / x; offset applied in log-space
+		double D = (2 * local_coeff[0] * (std::log(gamma_est_) - gamma_x_offset_) + local_coeff[1])
+		           / gamma_est_;
 		//RCLCPP_INFO(get_logger(), "GRADIENT at gamma=%.3f: %.2f", gamma_est_, D);
 		double max_grad = 0.5;
 		double D_clipped = std::clamp(D, -max_grad, max_grad);
 
 		// Gradient ascent step in gamma space
 		gamma_est_ += grad_k * D_clipped;
+		gamma_est_ = std::max(gamma_est_, 1e-6); // guard against log(0) / log(negative)
 
 		// Scale exposure level multiplicatively, anchored on the level active when
 		// the current curve fit was computed (same idea as before, now in [0,1] space)
@@ -324,19 +336,23 @@ namespace exp_node
 
 	void ExpNode::optimizeSimple(){
 		int local_gamma_index;
+		double local_exposure_level_cur;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			local_gamma_index = gamma_index;
+			local_exposure_level_cur = exposure_level_cur_;
 		}
 		// Step in normalized [0,1] space; simple_step_size_ controls convergence speed
-		exposure_level_new_ = exposure_level_cur_ + simple_step_size_ * (local_gamma_index - gamma_neutral_index_);
+		exposure_level_new_ = local_exposure_level_cur + simple_step_size_ * (local_gamma_index - gamma_neutral_index_);
 	}
 
 	void ExpNode::optimizeShim(){
 		double local_max_gamma;
+		double local_exposure_level_cur;
 		{
 			std::lock_guard<std::mutex> lock(optimizer_mutex_);
 			local_max_gamma = max_gamma;
+			local_exposure_level_cur = exposure_level_cur_;
 		}
 		alpha = 1.0;
 
@@ -344,7 +360,7 @@ namespace exp_node
 		//   EV = log2(1 / exposure_level)   →   exposure_level = 2^(-EV)
 		// Higher EV ↔ lower exposure level ↔ darker image, consistent with the
 		// original formula where higher expCur meant shorter shutter (less light).
-		double level = std::max(exposure_level_cur_, 1e-6);
+		double level = std::max(local_exposure_level_cur, 1e-6);
 		expCur = std::log2(1.0 / level);
 
 		if (shim_update_function == "2014") {
@@ -379,6 +395,7 @@ namespace exp_node
 					image1 = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
 				} catch (cv_bridge::Exception& e) {
 					RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+					return;
 				}
 
 				cv::Mat image2;
@@ -448,13 +465,11 @@ namespace exp_node
 		}
 
 		try {
-			check_rate = false;
-
 			cv::Mat image_capture;
 			try {
 				image_capture = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
 			} catch (cv_bridge::Exception& e) {
-				RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+				throw; // let the outer catch handle it and skip further processing
 			}
 
 			cv::Mat image_current;
@@ -484,10 +499,11 @@ namespace exp_node
 
 			// loop to find out the index that correspond to the optimum/maximum gamma value
 			double temp = -1.0;
+			int local_gamma_index = 0;
 			for(int i = 0; i < gamma_num_points_; i++){
 				if (metric_[i] > temp){
 					temp = metric_[i];
-					gamma_index = i;
+					local_gamma_index = i;
 				}
 			}
 
@@ -495,11 +511,7 @@ namespace exp_node
 ///////////////////////////////////////////////////  Curve Fitting  ///////////////////////////////////////////////
 
 			// Call the curve fitting function to find out coefficient
-			double * coeff_curve;
-			if (curve_fit_method_ == "log_quadratic")
-				coeff_curve = curveFitLogQuadratic(gamma_, metric_);
-			else
-				coeff_curve = curveFitQuadratic(gamma_, metric_);
+			std::array<double, 3> coeff_curve = curveFitLogQuadratic(gamma_, metric_);
 
 	#ifdef WITH_PLOTTER
 		if (enable_plotter) {
@@ -527,12 +539,8 @@ namespace exp_node
 				double a = coeff_curve[0];
 				double b = coeff_curve[1];
 				double c = coeff_curve[2];
-				if (curve_fit_method_ == "log_quadratic") {
-					double u = std::log(x[i]);
-					y[i] = a * u * u + b * u + c;
-				} else {
-					y[i] = a * x[i] * x[i] + b * x[i] + c;
-				}
+				double u = std::log(x[i]);
+				y[i] = a * u * u + b * u + c;
 			}
 
 			plotter_gamma->plot(
@@ -542,7 +550,7 @@ namespace exp_node
 				'-',
 				2,
 				cv::Scalar(0, 0, 255),
-				curve_fit_method_
+				"log_quadratic"
 				);
 
 			plotter_gamma->publish();
@@ -551,41 +559,37 @@ namespace exp_node
 
 			double coeff[POLYNOME_DEGREE+1];
 			for ( int i = 0; i < POLYNOME_DEGREE+1; i++) {
-					
-				coeff[i] = *(coeff_curve+i);
+				coeff[i] = coeff_curve[i];
 				//RCLCPP_INFO(get_logger(), "coeff %i is: %f", i, coeff[i]);
 			}
 
-			max_gamma = findRoots1(coeff, metric_[gamma_index]); // calling function findRoots1 to find opt_gamma
-			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", max_gamma);
-			
-			double metric_check = 0.0;
-			if (curve_fit_method_ == "log_quadratic") {
-				double u = std::log(max_gamma);
-				metric_check = coeff[0] * u * u + coeff[1] * u + coeff[2];
-			} else {
-				for (int i = 0; i < POLYNOME_DEGREE + 1; i++)
-					metric_check += coeff[i] * pow(max_gamma, POLYNOME_DEGREE - i);
-			}
+			double local_max_gamma = findRoots1(coeff); // calling function findRoots1 to find opt_gamma
+			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", local_max_gamma);
+
+			double u_check = std::log(local_max_gamma);
+			double metric_check = coeff[0] * u_check * u_check + coeff[1] * u_check + coeff[2];
 			//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
-			if (max_gamma < gamma_.front() || max_gamma > gamma_.back()) {
+			if (local_max_gamma < gamma_.front() || local_max_gamma > gamma_.back()) {
 				// find out the optimum gamma value associated with highest image gradient
-				max_gamma = gamma_[gamma_index];
+				local_max_gamma = gamma_[local_gamma_index];
 			}
-			else if (metric_[gamma_index] > metric_check) {
-				max_gamma = gamma_[gamma_index];
+			else if (metric_[local_gamma_index] > metric_check) {
+				local_max_gamma = gamma_[local_gamma_index];
 			}
 
-			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric_[gamma_index], metric_[gamma_neutral_index_]);
+			RCLCPP_INFO(get_logger(), "current opt met: %f; met at 1.0: %f", metric_[local_gamma_index], metric_[gamma_neutral_index_]);
 
-			// Store curve-fit coefficients and gamma result for the optimizer timer
+			// Store curve-fit coefficients and gamma result for the optimizer timer.
+			// All shared state written together under the lock to prevent data races
+			// with the optimizer timer thread.
 			{
 				std::lock_guard<std::mutex> lock(optimizer_mutex_);
 				for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = coeff[i];
 				exposure_level_at_camera_ = exposure_level_cur_;
-				new_camera_data_   = true;
-				// gamma_index and max_gamma are already updated as members above
+				new_camera_data_          = true;
+				gamma_index               = local_gamma_index;
+				max_gamma                 = local_max_gamma;
 			}
 
 			last_camera_process_time_ = std::make_shared<rclcpp::Time>(now());
@@ -598,11 +602,10 @@ namespace exp_node
 	double ExpNode::image_gradient_gamma(cv::Mat &src_img, int j) {
 		// Accepting the raw image and the index of gamma value as input argument
 
-		cv::Mat res = src_img.clone();
+		cv::Mat res;
 		///////////////////// The following computes the image gradient of the gamma-processed image /////////////////////
 		cv::Mat grad_x, grad_y;
 		cv::Mat abs_grad_x, abs_grad_y, dst_img;
-		cv::Mat weight_ori = cv::Mat::ones(res.rows,res.cols,CV_64FC1);
 
 		// Using the corresponding index to find out the correct lookuptable to use.
 		// This first lookup table transformation performs normalization of the image to [0,1]
@@ -612,7 +615,7 @@ namespace exp_node
 		// Define variables that will be used in the sobel gradient determination function
 		int scale = 1;
 		int delta = 0;
-		int ddepth = CV_8UC1;
+		int ddepth = CV_16S; // signed 16-bit so convertScaleAbs captures both gradient polarities
 
 		// Call the Sobel function to determine gradient image in x and y direction
 
@@ -662,6 +665,10 @@ namespace exp_node
 		}
 
 		double new_max_s  = new_max_us / 1000000.0;
+		if (shutter_max_s_ <= 0.0) {
+			RCLCPP_WARN(get_logger(), "shutter_max_s_ is zero — cannot compute proportional update, ignoring");
+			return;
+		}
 		double change = new_max_s / shutter_max_s_;
 		double new_portion = shutter_portion_ * change;
 
@@ -677,7 +684,6 @@ namespace exp_node
 			exposure_level_max_ += slice.portion;
 		}
 		RCLCPP_INFO(get_logger(), "exposure_level_max_: %f", exposure_level_max_);
-		//RCLCPP_INFO(get_logger(), "exposure_level_max_: %f", exposure_level_max_);
 		RCLCPP_INFO(get_logger(), "Shutter limit updated: max=%d µs (%.4f s), portion=%.3f",
 		            new_max_us, new_max_s, new_portion);
 	}
@@ -733,67 +739,6 @@ namespace exp_node
 		           exposure_level, shutter_msg.data, gain, led);
 	}
 
-    // void ExpNode::ChangeParam (double shutter_new, double gain_new) // may have input of the updated gain, exposure time settings
-    // {
-    //     dynamic_reconfigure::ReconfigureRequest srv_req;
-    //     dynamic_reconfigure::ReconfigureResponse srv_resp;
-    //     dynamic_reconfigure::BoolParameter acq_fps_bool; //enable "acquisition_frame_rate_enable"
-    //     dynamic_reconfigure::StrParameter gain_auto_str,exp_auto_str,wb_auto_str; // Auto gain, white balance and exposure off
-    //     dynamic_reconfigure::DoubleParameter acq_fps_double, exp_time_double, gain_double, exp_auto_upper_double;
-    //     dynamic_reconfigure::Config conf;
-
-	// // set constant frame rate
-    //     acq_fps_bool.name = "acquisition_frame_rate_enable"; // maximum frame rate: 80 fps
-    //     acq_fps_bool.value = true;
-    //     conf.bools.push_back(acq_fps_bool);
-
-	// // trun off built-in auto exposure
-    //     exp_auto_str.name = "exposure_auto"; // shut off auto exposure
-    //     exp_auto_str.value = "Off";
-    //     conf.strs.push_back(exp_auto_str);
-
-	// // turn off auto gain
-    //     gain_auto_str.name = "auto_gain"; // shut off auto gain adjustment
-    //     gain_auto_str.value = "Off";
-    //     conf.strs.push_back(gain_auto_str);
-
-	// /*
-    //     wb_auto_str.name = "auto_white_balance"; // shut off auto white balance
-    //     wb_auto_str.value = "Off";
-    //     conf.strs.push_back(wb_auto_str);
-	// */
-
-	// // Set required frame rate
-    //     acq_fps_double.name = "acquisition_frame_rate"; // maximum frame rate: 80 fps
-    //     acq_fps_double.value = frame_rate_req; //change frame rate as needed
-    //     conf.doubles.push_back(acq_fps_double);
-
-	// // Update exposure time
-    //     exp_time_double.name = "exposure_time"; // Maximum range: 0 to 32754 [unit: micro-seconds]
-    //     exp_time_double.value = shutter_new; ///////////////////////////// using function return value
-    //     conf.doubles.push_back(exp_time_double);
-
-	// // Update gain
-    //     gain_double.name = "gain"; // Maximum range: -10 to 30
-    //     gain_double.value = gain_new; ///////////////////////////////////// using function return value
-    //     conf.doubles.push_back(gain_double);
-
-	// // calculate and set highest possible exposure time (the camera has a limit of 32754 [unit: microsecond])
-    //     exp_auto_upper_double.name = "auto_exposure_time_upper_limit";
-	// if ((1.0/frame_rate_req)*1000000.0 > 32754.0){        
-	// 	exp_auto_upper_double.value = 32754.0;
-	// }
-	// else{
-	// 	exp_auto_upper_double.value = 1000000.0/frame_rate_req;
-	// }
-    //     conf.doubles.push_back(exp_auto_upper_double);
-
-    //     srv_req.config = conf;
-
-    //     //ros::service::call("/blackfly/spinnaker_camera_nodelet/set_parameters",srv_req, srv_resp);
-	// ros::service::call(service_call,srv_req, srv_resp);
-    // }
-
 	void ExpNode::generate_LUT (){
 		double sigma = 255.0 * met_act_thresh;
 		lut_metric_ = cv::Mat(1, 256, CV_8U);
@@ -813,259 +758,62 @@ namespace exp_node
 			} // end of for loop with index i
 		}// end of for loop with index j
 	} // end of generate_LUT()
-	
 
-	// double  ExpNode::findRoots1 (double a[6], double check)
-	// {
-	// 	static double roots1[4];
-	// 	double ad[5];
-	// 	double opt_gamma = 997.0, met_temp;
-	// 	ad[4] = 5 * a[0];
-	// 	ad[3] = 4 * a[1];
-	// 	ad[2] = 3 * a[2];
-	// 	ad[1] = 2 * a[3];
-	// 	ad[0] = a[4];
-	// 	Eigen::MatrixXd companion_mat (4, 4);
+	double ExpNode::findRoots1(double a[3])
+	{
+		double lowest_gamma  = gamma_.front();
+		double highest_gamma = gamma_.back();
+		double opt_gamma     = 1.0;
 
-	// 	for (int n = 0; n < 4; n++)
-	// 	{
-	// 		for (int m = 0; m < 4; m++)
-	// 			{
-	// 			 if (n == m + 1)
-	// 			 	companion_mat (n, m) = 1.0;
-	// 			 if (m == 4 - 1)
-	// 				companion_mat (n, m) = -ad[n] / ad[4];
-	// 		} // end of for loop with index m
-	// 	} // end of for loop with index n
+		if (std::abs(a[0]) < 1e-10) {
+			RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid fit");
+			return 1.0;
+		}
 
-	// 	Eigen::MatrixXcd eig = companion_mat.eigenvalues ();
-	// 	for (int i = 0; i < 4; i++)
-	// 	{
-	// 	 	met_temp = 0.0; // met_temp is used to check if the root can return a larger metric      
-	// 	 	if (std::imag (eig (i)) == 0) // if statement to determine whether or not root is true
-	// 	  	{
-	// 	  		roots1[i] = std::real(eig (i));	 
-	// 	  	}
-	// 	  	else
-	// 	  	{
+		// Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
+		// Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
+		if (a[0] > 0) {
+			// Convex in log-space: use derivative direction at x=1 (ln(1)=0)
+			RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
+			return (a[1] >= 0) ? 1.05 : 0.95;
+		}
+		double ln_opt = -a[1] / (2.0 * a[0]);
+		opt_gamma = std::exp(ln_opt);
 
-	// 	  		roots1[i] = 1000; // if root is imaginary, assign an overshoot value
-	// 	  	}
-	// 	  if ((roots1[i] < 2.0) && (roots1[i] > 0.5)) //check if the calculated root is within range (.5,2)
-	// 	  	{
-	// 	  		for (int j=0; j<6; j++) 
-	// 	  		{
-	// 	  			met_temp = met_temp + a[j] * pow(roots1[i],5-j);
-	// 	  		}
-	// 	  		if (met_temp > check) // if the root can return a metric that is greater than current metric
-	// 	  		{
-	// 	  			opt_gamma = roots1[i];
-	// 	  			RCLCPP_INFO(get_logger(), "in function maximum metric is: %f", met_temp);
-	// 	  		}
-	// 	  	}
-	// 		RCLCPP_INFO(get_logger(), "eig(i) is: %f, ima: %f", std::real(eig(i)), std::imag(eig(i)));
-	// 	} // end of for loop with index i
-	// 	return opt_gamma;
-	// } // END of function of findRoots1()
+		if (opt_gamma < lowest_gamma || opt_gamma > highest_gamma) {
+			RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", opt_gamma);
+			return (opt_gamma > highest_gamma) ? 1.05 : 0.95;
+		}
 
-// double ExpNode::findRoots1(double a[3], double check)
-// {
-// 	double lowest_gamma = gamma[0];
-// 	double highest_gamma = gamma[GAMMAS_COUNT-1];
-// 	double neutral_gamma = 1.0;
+		return opt_gamma;
+	}
 
-//     // double opt_gamma = 997.0, met_temp;
-// 	double opt_gamma = 1.0, met_temp;
-    
-//     // Derivative of quadratic ax^2 + bx + c is: 2ax + b
-//     // Setting derivative = 0: 2ax + b = 0
-//     // Root: x = -b/(2a)
-    
-//     double derivative_root;
-    
-//     // Check if we have a valid quadratic (a[0] != 0)
-//     if (std::abs(a[0]) < 1e-10)
-//     {
-//         RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid quadratic");
-//         return opt_gamma;
-//     }
+	// Fits f(x) = a*(ln(x)-b)^2 + c by substituting u=ln(x), yielding A*u^2 + B*u + C.
+	// Stored coefficients [A, B, C] encode: A=a, B=-2ab, C=ab^2+c.
+	// Optimal x: exp(-B / (2A)).  Derivative df/dx = (2A*ln(x) + B) / x.
+	std::array<double, 3> ExpNode::curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y)
+	{
+		int i;
+		int n = (int)x.size();
 
-// 	// If the polynomial is convex, we are way off from the optimal gamma.
-// 	// We need to just pick the gamma with the largest metric.
-// 	double derrivative_at_gamma_1 = 2*a[0] + a[1];
-// 	RCLCPP_INFO(get_logger(), "derrivative_at_gamma_1: %f", derrivative_at_gamma_1);
-// 	if (a[0] > 0) {
-// 		// First, determine if the function is increasing or decreasing
-// 		RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX!");
-// 		// we have to multipoly it by the derrivative itself because it would oscillate arround the peak
-// 		// if(derrivative_at_gamma_1 >= 0) return highest_gamma;
-// 		// if(derrivative_at_gamma_1 < 0) return lowest_gamma;
-// 		return 1.0;
-// 	}
-    
-//     // Calculate the critical point (where derivative = 0)
-//     derivative_root = -a[1] / (2.0 * a[0]);
-    
-//     //RCLCPP_INFO(get_logger(), "Critical point at x = %f", derivative_root);
-    
-//     // Check if the root is within range (0.5, 2.0)
-//     if ((derivative_root <= highest_gamma) && (derivative_root >= lowest_gamma))
-//     {
-//         // Evaluate the polynomial at this point
-//         met_temp = a[0] * derivative_root * derivative_root + 
-//                    a[1] * derivative_root + 
-//                    a[2];
-        
-//         //RCLCPP_INFO(get_logger(), "Metric at critical point: %f", met_temp);
-        
-//         // Check if this gives a better metric than current
-//         //if (met_temp > check)	// this can cause some jumping of the opt_gamma value; we rather choose little bit suboptimal, but stable value
-//         {
-//             opt_gamma = derivative_root;
-//             //RCLCPP_INFO(get_logger(), "Found better maximum metric: %f at x = %f", 
-//             //           met_temp, opt_gamma);
-//         }
-//     }
-//     else
-//     {
-//         RCLCPP_INFO(get_logger(), "Critical point %f outside range (0.5, 2.0)", derivative_root);
-// 		// if(derivative_root >= highest_gamma) opt_gamma = highest_gamma;
-// 		// if(derivative_root <= lowest_gamma) opt_gamma = lowest_gamma;
-//     }
-    
-//     return opt_gamma;
-// } // END of function findRoots1()
+		Eigen::MatrixXd A(n, 3);
+		Eigen::MatrixXd b(n, 1);
 
-double ExpNode::findRoots1(double a[3], double check)
-{
-    double lowest_gamma  = gamma_.front();
-    double highest_gamma = gamma_.back();
-    double opt_gamma     = 1.0;
+		for (i = 0; i < n; i++) {
+			double u = std::log(std::max(x[i], 1e-10)); // guard against log(0) or log(negative)
+			A(i, 0) = u * u;  // ln(x)^2
+			A(i, 1) = u;      // ln(x)
+			A(i, 2) = 1.0;
+		}
+		for (i = 0; i < n; i++) b(i, 0) = y[i];
 
-    if (std::abs(a[0]) < 1e-10) {
-        RCLCPP_WARN(get_logger(), "Coefficient a[0] too small, not a valid fit");
-        return 1.0;
-    }
+		Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
+		std::array<double, 3> coeff;
+		for (i = 0; i < 3; i++) coeff[i] = Q(i);
 
-    if (curve_fit_method_ == "log_quadratic") {
-        // Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
-        // Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
-        if (a[0] > 0) {
-            // Convex in log-space: use derivative direction at x=1 (ln(1)=0)
-            RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
-            return (a[1] >= 0) ? 1.05 : 0.95;
-        }
-        double ln_opt = -a[1] / (2.0 * a[0]);
-        opt_gamma = std::exp(ln_opt);
-    } else {
-        // Quadratic: A*x^2 + B*x + C, maximum at x = -B/(2A).
-        double derrivative_at_gamma_1 = 2 * a[0] + a[1];
-        if (a[0] > 0) {
-            RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
-            return (derrivative_at_gamma_1 >= 0) ? 1.05 : 0.95;
-        }
-        opt_gamma = -a[1] / (2.0 * a[0]);
-    }
+		return coeff;
+	} // END of function curveFitLogQuadratic()
 
-    if (opt_gamma < lowest_gamma || opt_gamma > highest_gamma) {
-        RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", opt_gamma);
-        return (opt_gamma > highest_gamma) ? 1.05 : 0.95;
-    }
-
-    return opt_gamma;
-}
-
-// double * ExpNode::curveFit (double x[GAMMAS_COUNT], double y[GAMMAS_COUNT])
-// { static double coff[6];
-//   int i, j, k, n, N;
-
-//   n = 5;
-  
-//   Eigen::MatrixXd A(GAMMAS_COUNT,6);
-//   Eigen::MatrixXd b(GAMMAS_COUNT,1);
-   
-//   for (i = 0; i < GAMMAS_COUNT; i++)
-//       for (j = 5; j>=0; j--)
-// 	{A(i,5-j) = pow (x[i], j);}
-    
-//   for (i = 0; i < GAMMAS_COUNT; i++)
-//    {  b(i,0) = y[i]; } 
-  
-//   Eigen::MatrixXd A1 = A.transpose()*A;
-//   Eigen::MatrixXd b1 = A.transpose()*b; 
-//   //Eigen::MatrixXd Q =A1.colPivHouseholderQr().solve(b1);
-//   Eigen::MatrixXd Q =A1.inverse()*b1;
-
-//   for(i=0; i<n+1; i++)
-//   {  coff[i] = Q(i);
-// 	//std::cout << "\nx is: " << x[i] << "Q is: " << coff[i] << std::endl;
-// }
-
-//   return coff;
-   
-// } // END of function curveFit()
-
-// Fits f(x) = a*(ln(x)-b)^2 + c by substituting u=ln(x), yielding A*u^2 + B*u + C.
-// Stored coefficients [A, B, C] encode: A=a, B=-2ab, C=ab^2+c.
-// Optimal x: exp(-B / (2A)).  Derivative df/dx = (2A*ln(x) + B) / x.
-double * ExpNode::curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y)
-{
-    static double coff[3];
-    int i;
-    int n = (int)x.size();
-
-    Eigen::MatrixXd A(n, 3);
-    Eigen::MatrixXd b(n, 1);
-
-    for (i = 0; i < n; i++) {
-        double u = std::log(x[i]);
-        A(i, 0) = u * u;  // ln(x)^2
-        A(i, 1) = u;      // ln(x)
-        A(i, 2) = 1.0;
-    }
-    for (i = 0; i < n; i++) b(i, 0) = y[i];
-
-    Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
-    for (i = 0; i < 3; i++) coff[i] = Q(i);
-
-    return coff;
-} // END of function curveFitLogQuadratic()
-
-double * ExpNode::curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y)
-{ 
-    static double coff[3];  // Only need 3 coefficients for degree 2
-    int i;
-    int n = (int)x.size();
-  
-    // Create matrices for degree 2 polynomial: y = a*x^2 + b*x + c
-    Eigen::MatrixXd A(n, 3);
-    Eigen::MatrixXd b(n, 1);
-   
-    // Fill matrix A with [x^2, x, 1] for each point
-    for (i = 0; i < n; i++)
-    {
-        A(i, 0) = x[i] * x[i];  // x^2
-        A(i, 1) = x[i];         // x
-        A(i, 2) = 1.0;          // constant term
-    }
-    
-    // Fill vector b with y values
-    for (i = 0; i < n; i++)
-    {
-        b(i, 0) = y[i];
-    }
-  
-    // Solve least squares problem directly (no normal equations)
-    Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
-
-    // Extract coefficients
-    for (i = 0; i < 3; i++)
-    {
-        coff[i] = Q(i);
-    }
-
-    return coff;
-} // END of function curveFit()
 
 } //END OF THE WHOLE NAMESPACE
 
