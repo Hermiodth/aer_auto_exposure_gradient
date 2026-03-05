@@ -93,10 +93,6 @@ namespace exp_node
 		get_parameter("gamma_x_offset", gamma_x_offset_);
     	RCLCPP_INFO(get_logger(), "gamma_x_offset: %.2f", gamma_x_offset_);
 
-		declare_parameter<std::string>("curve_fit_method", "quadratic");
-		get_parameter("curve_fit_method", curve_fit_method_);
-		RCLCPP_INFO(get_logger(), "curve_fit_method: %s", curve_fit_method_.c_str());
-
 		declare_parameter<double>("initial_exposure_level", 0.1);
 		get_parameter("initial_exposure_level", exposure_level_cur_);
 		exposure_level_at_camera_ = exposure_level_cur_;
@@ -137,7 +133,7 @@ namespace exp_node
 		declare_parameter<int>("gamma_num_points", 3);
 		get_parameter("gamma_num_points", gamma_num_points_);
 		if (gamma_num_points_ < 3) {
-			RCLCPP_WARN(get_logger(), "gamma_num_points must be >= 3 for quadratic fit (got %d) — clamping to 3", gamma_num_points_);
+			RCLCPP_WARN(get_logger(), "gamma_num_points must be >= 3 (got %d) — clamping to 3", gamma_num_points_);
 			gamma_num_points_ = 3;
 		}
 		RCLCPP_INFO(get_logger(), "gamma_num_points: %i", gamma_num_points_);
@@ -247,7 +243,7 @@ namespace exp_node
 				600,
 				cv::Scalar(255, 255, 255)
 			);
-			plotter_gamma->setTitle(curve_fit_method_);
+			plotter_gamma->setTitle("log_quadratic");
 			plotter_gamma->setTitleFontSize(3.5);
 			plotter_gamma->setTickFontSize(2.5);
 			plotter_gamma->setLegendFontSize(3.0);
@@ -313,17 +309,10 @@ namespace exp_node
 
 		// Gradient of the fitted curve evaluated at the current gamma estimate.
 		// gamma_est_ changes each optimizer step, so D changes too.
-		// gamma_x_offset_ shifts the convergence point (in x-space for quadratic,
-		// in log-x-space for log_quadratic).
-		double D;
-		if (curve_fit_method_ == "log_quadratic") {
-			// df/dx = (2A*ln(x) + B) / x; offset applied in log-space
-			D = (2 * local_coeff[0] * (std::log(gamma_est_) - gamma_x_offset_) + local_coeff[1])
-			    / gamma_est_;
-		} else {
-			// df/dx = 2A*x + B (quadratic)
-			D = 2 * local_coeff[0] * (gamma_est_ - gamma_x_offset_) + local_coeff[1];
-		}
+		// gamma_x_offset_ shifts the convergence point in log-x-space.
+		// df/dx = (2A*ln(x) + B) / x; offset applied in log-space
+		double D = (2 * local_coeff[0] * (std::log(gamma_est_) - gamma_x_offset_) + local_coeff[1])
+		           / gamma_est_;
 		//RCLCPP_INFO(get_logger(), "GRADIENT at gamma=%.3f: %.2f", gamma_est_, D);
 		double max_grad = 0.5;
 		double D_clipped = std::clamp(D, -max_grad, max_grad);
@@ -522,11 +511,7 @@ namespace exp_node
 ///////////////////////////////////////////////////  Curve Fitting  ///////////////////////////////////////////////
 
 			// Call the curve fitting function to find out coefficient
-			std::array<double, 3> coeff_curve;
-			if (curve_fit_method_ == "log_quadratic")
-				coeff_curve = curveFitLogQuadratic(gamma_, metric_);
-			else
-				coeff_curve = curveFitQuadratic(gamma_, metric_);
+			std::array<double, 3> coeff_curve = curveFitLogQuadratic(gamma_, metric_);
 
 	#ifdef WITH_PLOTTER
 		if (enable_plotter) {
@@ -554,12 +539,8 @@ namespace exp_node
 				double a = coeff_curve[0];
 				double b = coeff_curve[1];
 				double c = coeff_curve[2];
-				if (curve_fit_method_ == "log_quadratic") {
-					double u = std::log(x[i]);
-					y[i] = a * u * u + b * u + c;
-				} else {
-					y[i] = a * x[i] * x[i] + b * x[i] + c;
-				}
+				double u = std::log(x[i]);
+				y[i] = a * u * u + b * u + c;
 			}
 
 			plotter_gamma->plot(
@@ -569,7 +550,7 @@ namespace exp_node
 				'-',
 				2,
 				cv::Scalar(0, 0, 255),
-				curve_fit_method_
+				"log_quadratic"
 				);
 
 			plotter_gamma->publish();
@@ -585,14 +566,8 @@ namespace exp_node
 			double local_max_gamma = findRoots1(coeff); // calling function findRoots1 to find opt_gamma
 			//RCLCPP_INFO(get_logger(), "opt_gamma now is:  %f", local_max_gamma);
 
-			double metric_check = 0.0;
-			if (curve_fit_method_ == "log_quadratic") {
-				double u = std::log(local_max_gamma);
-				metric_check = coeff[0] * u * u + coeff[1] * u + coeff[2];
-			} else {
-				for (int i = 0; i < POLYNOME_DEGREE + 1; i++)
-					metric_check += coeff[i] * pow(local_max_gamma, POLYNOME_DEGREE - i);
-			}
+			double u_check = std::log(local_max_gamma);
+			double metric_check = coeff[0] * u_check * u_check + coeff[1] * u_check + coeff[2];
 			//RCLCPP_INFO(get_logger(), "metric_check = %f", metric_check);
 
 			if (local_max_gamma < gamma_.front() || local_max_gamma > gamma_.back()) {
@@ -795,25 +770,15 @@ namespace exp_node
 			return 1.0;
 		}
 
-		if (curve_fit_method_ == "log_quadratic") {
-			// Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
-			// Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
-			if (a[0] > 0) {
-				// Convex in log-space: use derivative direction at x=1 (ln(1)=0)
-				RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
-				return (a[1] >= 0) ? 1.05 : 0.95;
-			}
-			double ln_opt = -a[1] / (2.0 * a[0]);
-			opt_gamma = std::exp(ln_opt);
-		} else {
-			// Quadratic: A*x^2 + B*x + C, maximum at x = -B/(2A).
-			double derrivative_at_gamma_1 = 2 * a[0] + a[1];
-			if (a[0] > 0) {
-				RCLCPP_INFO(get_logger(), "PARABOLA IS CONVEX - using small correction");
-				return (derrivative_at_gamma_1 >= 0) ? 1.05 : 0.95;
-			}
-			opt_gamma = -a[1] / (2.0 * a[0]);
+		// Coefficients [A, B, C] represent A*ln(x)^2 + B*ln(x) + C.
+		// Maximum (for concave-down, A < 0) at: ln(x) = -B/(2A) → x = exp(-B/(2A)).
+		if (a[0] > 0) {
+			// Convex in log-space: use derivative direction at x=1 (ln(1)=0)
+			RCLCPP_INFO(get_logger(), "LOG-QUAD IS CONVEX - using small correction");
+			return (a[1] >= 0) ? 1.05 : 0.95;
 		}
+		double ln_opt = -a[1] / (2.0 * a[0]);
+		opt_gamma = std::exp(ln_opt);
 
 		if (opt_gamma < lowest_gamma || opt_gamma > highest_gamma) {
 			RCLCPP_INFO(get_logger(), "Critical point %f outside range - using small correction", opt_gamma);
@@ -849,41 +814,6 @@ namespace exp_node
 		return coeff;
 	} // END of function curveFitLogQuadratic()
 
-	std::array<double, 3> ExpNode::curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y)
-	{
-		int i;
-		int n = (int)x.size();
-
-		// Create matrices for degree 2 polynomial: y = a*x^2 + b*x + c
-		Eigen::MatrixXd A(n, 3);
-		Eigen::MatrixXd b(n, 1);
-
-		// Fill matrix A with [x^2, x, 1] for each point
-		for (i = 0; i < n; i++)
-		{
-			A(i, 0) = x[i] * x[i];  // x^2
-			A(i, 1) = x[i];         // x
-			A(i, 2) = 1.0;          // constant term
-		}
-
-		// Fill vector b with y values
-		for (i = 0; i < n; i++)
-		{
-			b(i, 0) = y[i];
-		}
-
-		// Solve least squares problem directly (no normal equations)
-		Eigen::MatrixXd Q = A.colPivHouseholderQr().solve(b);
-
-		// Extract coefficients
-		std::array<double, 3> coeff;
-		for (i = 0; i < 3; i++)
-		{
-			coeff[i] = Q(i);
-		}
-
-		return coeff;
-	} // END of function curveFitQuadratic()
 
 } //END OF THE WHOLE NAMESPACE
 

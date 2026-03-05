@@ -62,7 +62,6 @@ class ExpNode : public rclcpp::Node {
   void ChangeParam (double exposure_level);
   void shutterLimitCb(const std_msgs::msg::Int32::ConstSharedPtr &msg);
   
-  std::array<double, 3> curveFitQuadratic(const std::vector<double>& x, const std::vector<double>& y);
   std::array<double, 3> curveFitLogQuadratic(const std::vector<double>& x, const std::vector<double>& y);
   double findRoots1(double a[3]);
   void generate_LUT ();
@@ -122,7 +121,6 @@ class ExpNode : public rclcpp::Node {
 
   double grad_k;
   double gamma_x_offset_;
-  std::string curve_fit_method_;
 
   // Parameters that correlated to Shim's Gradient Metric
   double met_act_thresh = 0.06;
